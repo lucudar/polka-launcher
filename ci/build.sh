@@ -92,9 +92,21 @@ cp "$apk" "polka-$ver.apk"
 if gh release view "v$ver" >/dev/null 2>&1; then
   gh release upload "v$ver" "polka-$ver.apk" --clobber && release_state="обновлён v$ver" || release_state="ошибка"
 else
+  # Описание релиза: первый раздел «Что нового» из README, его же Полка покажет на странице обновления.
+  notes=$(awk '
+    /^## Что нового/ { if (seen) exit; seen = 1; next }
+    seen && /^## / { exit }
+    seen && /^- / { if (item != "") print item; item = $0; next }
+    seen && /^  +[^ ]/ { line = $0; sub(/^ +/, "", line); item = item " " line; next }
+    END { if (item != "") print item }
+  ' README.md)
+  [ -n "$notes" ] || notes="Сборка $(git rev-parse --short HEAD)."
+  notes="$notes
+
+Вручную: adb install -r polka-$ver.apk"
   gh release create "v$ver" "polka-$ver.apk" --target "$(git rev-parse HEAD)" \
     --title "Полка $ver" \
-    --notes "Сборка $(git rev-parse --short HEAD). Установка: adb install -r polka-$ver.apk" &&
+    --notes "$notes" &&
     release_state="создан v$ver" || release_state="ошибка"
 fi
 report "success"
