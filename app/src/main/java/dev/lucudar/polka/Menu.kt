@@ -39,18 +39,19 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 import android.view.KeyEvent as NativeKeyEvent
 
-enum class MenuAction { ToggleFavorite, Move, Hide, Info, Uninstall }
+enum class MenuAction { ToggleFavorite, Move, Rows, Hide, Info, Uninstall }
 
 /**
  * Меню плитки: стеклянный поповер, который вырастает из плитки (снизу от верхнего ряда,
  * сверху от нижнего). Внутри всё плоское: стекло на стекле не кладём.
  */
 @Composable
-fun AppMenu(target: MenuTarget, isFavorite: Boolean, onAction: (MenuAction) -> Unit) {
+fun AppMenu(target: MenuTarget, isFavorite: Boolean, canMove: Boolean, onAction: (MenuAction) -> Unit) {
     val look = LocalLook.current
     val items = buildList {
         add(MenuAction.ToggleFavorite to (if (isFavorite) "Убрать из избранного" else "В избранное"))
-        if (isFavorite) add(MenuAction.Move to "Переставить")
+        if (canMove) add(MenuAction.Move to "Переставить")
+        add(MenuAction.Rows to "Добавить в ряд")
         add(MenuAction.Hide to "Скрыть")
         add(MenuAction.Info to "О приложении")
         if (!target.app.isSystem) add(MenuAction.Uninstall to "Удалить")

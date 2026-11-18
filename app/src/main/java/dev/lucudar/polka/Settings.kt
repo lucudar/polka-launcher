@@ -2,6 +2,7 @@ package dev.lucudar.polka
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -9,6 +10,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Обои: полная картинка 1920 x 1080, размытая копия 480 x 270 для стекла и превью для настроек.
@@ -78,6 +81,16 @@ inline fun <reified E : Enum<E>> E.step(delta: Int): E {
     return values[(ordinal + delta).mod(values.size)]
 }
 
+/** Свой ряд на главном: название из готового списка и приложения в порядке добавления. */
+@Immutable
+data class AppRow(val id: String, val title: String, val apps: List<String>)
+
+/** Названия рядов. Набирать текст пультом мучительно, поэтому выбор из готовых. */
+val ROW_NAMES = listOf(
+    "Кино", "Сериалы", "Музыка", "Игры", "Спорт", "Детям",
+    "ТВ-каналы", "Новости", "Обучение", "Инструменты", "Разное",
+)
+
 /**
  * Настройки лаунчера. Каждое поле одновременно Compose-состояние и запись в SharedPreferences,
  * поэтому выбор в панели сразу виден на экране и переживает перезапуск.
@@ -112,6 +125,15 @@ class LauncherSettings(context: Context) {
 
     /** Пакет, который открывается сразу после включения стика, или null. */
     var autostart by mutableStateOf<String?>(prefs.getString(K_AUTOSTART, null))
+        private set
+
+    var rows by mutableStateOf(prefs.readRows(K_ROWS))
+        private set
+    var weatherOn by mutableStateOf(prefs.getBoolean(K_WEATHER, false))
+        private set
+    var city by mutableStateOf(prefs.readEnum(K_CITY, City.Moscow))
+        private set
+    var autoUpdate by mutableStateOf(prefs.getBoolean(K_AUTO_UPDATE, true))
         private set
 
     /** Загрузка, на которой автозапуск уже сработал: перезапуск Полки в ту же загрузку его не повторит. */
@@ -180,6 +202,63 @@ class LauncherSettings(context: Context) {
         if (currentBoot != null) markBootHandled(currentBoot)
     }
 
+    fun updateWeatherOn(value: Boolean) {
+        weatherOn = value
+        prefs.edit().putBoolean(K_WEATHER, value).apply()
+    }
+
+    fun updateCity(value: City) {
+        city = value
+        prefs.edit().putString(K_CITY, value.name).apply()
+    }
+
+    fun updateAutoUpdate(value: Boolean) {
+        autoUpdate = value
+        prefs.edit().putBoolean(K_AUTO_UPDATE, value).apply()
+    }
+
+    /** Новый ряд встаёт последним среди своих, перед «Всеми приложениями». Возвращает его id. */
+    fun addRow(title: String, apps: List<String> = emptyList()): String {
+        val id = "r" + System.currentTimeMillis().toString(36)
+        updateRows(rows + AppRow(id, title, apps))
+        return id
+    }
+
+    fun renameRow(id: String, title: String) = updateRows(rows.map { if (it.id == id) it.copy(title = title) else it })
+
+    fun deleteRow(id: String) = updateRows(rows.filter { it.id != id })
+
+    fun moveRow(id: String, delta: Int) {
+        val i = rows.indexOfFirst { it.id == id }
+        val j = i + delta
+        if (i < 0 || j !in rows.indices) return
+        updateRows(rows.toMutableList().apply { add(j, removeAt(i)) })
+    }
+
+    fun toggleInRow(id: String, pkg: String) = updateRows(
+        rows.map { row ->
+            if (row.id != id) row else row.copy(apps = if (pkg in row.apps) row.apps - pkg else row.apps + pkg)
+        },
+    )
+
+    /** Перестановка внутри ряда: шаг через невидимые (скрытые и удалённые) приложения. */
+    fun moveInRow(id: String, pkg: String, delta: Int, shown: Set<String>) {
+        val row = rows.firstOrNull { it.id == id } ?: return
+        val list = row.apps
+        val i = list.indexOf(pkg)
+        if (i < 0) return
+        var j = i + delta
+        while (j in list.indices && list[j] !in shown) j += delta
+        if (j !in list.indices) return
+        val next = list.toMutableList().apply { add(j, removeAt(i)) }
+        updateRows(rows.map { if (it.id == id) it.copy(apps = next) else it })
+    }
+
+    private fun updateRows(value: List<AppRow>) {
+        rows = value
+        prefs.edit().putString(K_ROWS, value.toJson()).apply()
+    }
+
     fun markBootHandled(boot: Int) {
         prefs.edit().putInt(K_BOOT, boot).apply()
     }
@@ -228,6 +307,10 @@ class LauncherSettings(context: Context) {
         const val K_BRIGHTNESS = "wall_brightness"
         const val K_AUTOSTART = "autostart"
         const val K_BOOT = "autostart_boot"
+        const val K_ROWS = "rows"
+        const val K_WEATHER = "weather_on"
+        const val K_CITY = "weather_city"
+        const val K_AUTO_UPDATE = "auto_update"
     }
 }
 
@@ -255,3 +338,27 @@ private inline fun <reified E : Enum<E>> SharedPreferences.readEnum(key: String,
 
 private fun SharedPreferences.readSet(key: String): Set<String> =
     getString(key, null)?.split('\n')?.filterTo(LinkedHashSet()) { it.isNotBlank() } ?: emptySet()
+
+private fun List<AppRow>.toJson(): String = JSONArray().also { array ->
+    forEach { row ->
+        array.put(
+            JSONObject()
+                .put("id", row.id)
+                .put("title", row.title)
+                .put("apps", JSONArray(row.apps)),
+        )
+    }
+}.toString()
+
+private fun SharedPreferences.readRows(key: String): List<AppRow> = runCatching {
+    val array = JSONArray(getString(key, null) ?: return emptyList())
+    (0 until array.length()).map { i ->
+        val o = array.getJSONObject(i)
+        val apps = o.optJSONArray("apps")
+        AppRow(
+            id = o.getString("id"),
+            title = o.getString("title"),
+            apps = if (apps == null) emptyList() else (0 until apps.length()).map { apps.getString(it) },
+        )
+    }
+}.getOrDefault(emptyList())

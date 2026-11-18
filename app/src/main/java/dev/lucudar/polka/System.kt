@@ -212,7 +212,7 @@ fun plural(n: Int, one: String, few: String, many: String): String {
 
 fun appsCount(n: Int): String = "$n\u00A0${plural(n, "приложение", "приложения", "приложений")}"
 
-private fun Context.safeStart(intent: Intent): Boolean = try {
+fun Context.safeStart(intent: Intent): Boolean = try {
     startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     true
 } catch (e: Exception) {

@@ -27,6 +27,9 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
@@ -39,6 +42,8 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -68,6 +73,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import android.view.KeyEvent as NativeKeyEvent
 
 private const val SETTINGS_KEY = "settings"
@@ -111,7 +117,16 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
     var counts by remember { mutableStateOf(stats.snapshot()) }
     var menu by remember { mutableStateOf<MenuTarget?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
+    // Ключ плитки, которую сейчас переставляют: fav:pkg или row:id:pkg.
     var moving by remember { mutableStateOf<String?>(null) }
+    // Панель настроек, открытая из меню плитки: сразу на выборе рядов и с возвратом к плитке.
+    var panelApp by remember { mutableStateOf<String?>(null) }
+    var panelReturn by remember { mutableStateOf<String?>(null) }
+    val weather = remember { WeatherModel(context) }
+    val updater = remember { Updater(context) }
+    val scope = rememberCoroutineScope()
+    val rowStates = remember { mutableMapOf<String, LazyListState>() }
+    val scroll = rememberScrollState()
     var toast by remember { mutableStateOf<String?>(null) }
     var restoreFocus by remember { mutableStateOf<String?>(null) }
     var lastFocus by remember { mutableStateOf<String?>(null) }
@@ -146,7 +161,25 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
     val sort = settings.sort
     val visible = remember(all, hidden, sort, counts) { all?.let { arrange(it, hidden, sort, counts) } }
     val favList = remember(visible, favorites) { if (visible == null) emptyList() else favoriteApps(visible, favorites) }
+    val customRows = settings.rows
+    val rowApps = remember(visible, customRows) {
+        if (visible == null) {
+            emptyList()
+        } else {
+            val byPkg = visible.associateBy { it.pkg }
+            customRows.map { row -> row to row.apps.mapNotNull { byPkg[it] } }.filter { it.second.isNotEmpty() }
+        }
+    }
     val interactive = menu == null && !settingsOpen
+
+    fun listFor(prefix: String): List<AppEntry> = when {
+        prefix == "fav" -> favList
+        prefix.startsWith("row:") -> rowApps.firstOrNull { "row:${it.first.id}" == prefix }?.second.orEmpty()
+        else -> visible.orEmpty()
+    }
+
+    fun keyAlive(key: String): Boolean = key == SETTINGS_KEY || key == NET_KEY ||
+        listFor(key.substringBeforeLast(':')).any { it.pkg == key.substringAfterLast(':') }
 
     // Первый показ после включения стика: открыть выбранное приложение, ровно один раз за загрузку.
     fun runAutostart(loaded: List<AppEntry>) {
@@ -172,7 +205,7 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         val focusGone = when (val f = lastFocus) {
             null -> true
             SETTINGS_KEY, NET_KEY -> false
-            else -> f.substringAfter(':') !in shownPkgs
+            else -> f.substringAfterLast(':') !in shownPkgs
         }
         if (menu == null && !settingsOpen && (firstLoad || focusGone)) {
             registry.requestWithRetry(firstKey(shown, favoriteApps(shown, favorites)))
@@ -189,6 +222,8 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         counts = fresh
         runCatching { favState.scrollToItem(0) }
         runCatching { allState.scrollToItem(0) }
+        rowStates.values.forEach { runCatching { it.scrollToItem(0) } }
+        runCatching { scroll.scrollTo(0) }
         val loaded = apps ?: return@LaunchedEffect
         val shown = arrange(loaded, settings.hidden, settings.sort, fresh)
         registry.requestWithRetry(firstKey(shown, favoriteApps(shown, favorites)))
@@ -198,6 +233,22 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         val key = restoreFocus ?: return@LaunchedEffect
         registry.requestWithRetry(key)
         restoreFocus = null
+    }
+
+    // Погода: свежесть проверяем раз в 10 минут, в сеть идём не чаще раза в 30.
+    LaunchedEffect(settings.weatherOn, settings.city, resumeTick) {
+        if (!settings.weatherOn) return@LaunchedEffect
+        while (true) {
+            weather.refresh(settings.city, force = false)
+            delay(10 * 60_000L)
+        }
+    }
+
+    // Обновления: не чаще раза в 12 часов и только пока Полка на экране.
+    LaunchedEffect(resumeTick) {
+        if (resumeTick == 0 || !settings.autoUpdate || !updater.due()) return@LaunchedEffect
+        delay(5_000)
+        updater.check()
     }
 
     LaunchedEffect(toast) {
@@ -238,7 +289,7 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         favorites = next
         store.write(next)
         val focusKey = when {
-            target.focusKey.startsWith("all:") -> target.focusKey
+            !target.focusKey.startsWith("fav:") -> target.focusKey
             pkg in next -> "fav:$pkg"
             else -> {
                 val i = visibleBefore.indexOf(pkg)
@@ -262,16 +313,29 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         store.write(next)
     }
 
+    /** Стрелки в режиме перестановки: в избранном или в своём ряду, смотря откуда начали. */
+    fun moveTile(key: String, delta: Int) {
+        val pkg = key.substringAfterLast(':')
+        val prefix = key.substringBeforeLast(':')
+        when {
+            prefix == "fav" -> moveFavorite(pkg, delta)
+            prefix.startsWith("row:") -> {
+                val shown = visible?.mapTo(HashSet()) { it.pkg } ?: return
+                settings.moveInRow(prefix.removePrefix("row:"), pkg, delta, shown)
+            }
+        }
+    }
+
     /** Скрыть с главного: фокус переходит к соседу по ряду, чтобы не улететь в начало. */
     fun hideApp(target: MenuTarget) {
         val pkg = target.app.pkg
-        val inFavorites = target.focusKey.startsWith("fav:")
-        val row = if (inFavorites) favList else visible.orEmpty()
+        val prefix = target.focusKey.substringBeforeLast(':')
+        val row = listFor(prefix)
         val i = row.indexOfFirst { it.pkg == pkg }
         val neighbor = (row.getOrNull(i + 1) ?: row.getOrNull(i - 1))?.takeIf { it.pkg != pkg }
         settings.hide(pkg)
         toast = "Скрыли «${target.app.label}». Вернуть можно в\u00A0настройках"
-        val focusKey = neighbor?.let { (if (inFavorites) "fav:" else "all:") + it.pkg } ?: run {
+        val focusKey = neighbor?.let { "$prefix:${it.pkg}" } ?: run {
             val rest = visible.orEmpty().filter { it.pkg != pkg }
             firstKey(rest, favoriteApps(rest, favorites))
         }
@@ -282,8 +346,16 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         when (action) {
             MenuAction.ToggleFavorite -> toggleFavorite(target)
             MenuAction.Move -> {
-                closeMenu(target.focusKey)
-                moving = target.app.pkg
+                // Из «Всех приложений» двигаем копию в избранном: туда же и фокус.
+                val key = if (target.focusKey.startsWith("all:")) "fav:${target.app.pkg}" else target.focusKey
+                closeMenu(key)
+                moving = key
+            }
+            MenuAction.Rows -> {
+                closeMenu(null)
+                panelApp = target.app.pkg
+                panelReturn = target.focusKey
+                settingsOpen = true
             }
             MenuAction.Hide -> hideApp(target)
             MenuAction.Info -> {
@@ -341,7 +413,8 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                 val labelSpace = if (labels == TileLabels.Off) 0.dp else Layout.labelSpace
                 val fixed = Layout.safeTop + Layout.barHeight + Layout.shelfChrome * 2 + Space.xl +
                     tiles.favH + tiles.allH + labelSpace * 2 + Layout.safeBottom
-                val gap = (maxHeight - fixed).coerceIn(Space.l, Space.xxxl)
+                // Со своими рядами экран всё равно прокручивается: воздух под шапкой обычный.
+                val gap = if (rowApps.isNotEmpty()) Space.xl else (maxHeight - fixed).coerceIn(Space.l, Space.xxxl)
                 Column(Modifier.fillMaxSize().padding(top = Layout.safeTop)) {
                     TopBar(
                         clock = now.clockText(context, settings.clock),
@@ -355,13 +428,25 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                         onNetwork = {
                             if (!context.openSystemScreen(SystemScreen.Internet)) toast = "Не получилось открыть настройки сети"
                         },
-                        onSettings = { settingsOpen = true },
+                        weather = if (settings.weatherOn) weather.current(settings.city) else null,
+                        updateBadge = updater.available != null,
+                        onSettings = {
+                            panelApp = null
+                            panelReturn = null
+                            settingsOpen = true
+                        },
                         modifier = Modifier
                             .padding(horizontal = Layout.safeH)
                             .fillMaxWidth()
                             .height(Layout.barHeight),
                     )
                     Spacer(Modifier.height(gap))
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .verticalScroll(scroll),
+                    ) {
                     if (visible == null) {
                         ShelfTitle("Избранное")
                         SkeletonRow(tiles.favW, tiles.favH, 5, labelSpace)
@@ -383,10 +468,33 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                             onFocused = { lastFocus = it },
                             onLaunch = { openApp(it) },
                             onMenu = { menu = it },
-                            onMove = { pkg, delta -> moveFavorite(pkg, delta) },
+                            onMove = { pkg, delta -> moveTile("fav:$pkg", delta) },
                             onMoveDone = { moving = null },
                             empty = { ShelfHint("Зажми OK на\u00A0приложении ниже, и\u00A0оно появится здесь") },
                         )
+                        rowApps.forEach { (row, list) ->
+                            key(row.id) {
+                                val prefix = "row:${row.id}"
+                                Spacer(Modifier.height(Space.xl))
+                                Shelf(
+                                    title = row.title,
+                                    apps = list,
+                                    keyPrefix = prefix,
+                                    tileWidth = tiles.allW,
+                                    tileHeight = tiles.allH,
+                                    labels = labels,
+                                    state = rowStates.getOrPut(row.id) { LazyListState() },
+                                    registry = registry,
+                                    interactive = interactive,
+                                    moving = moving,
+                                    onFocused = { lastFocus = it },
+                                    onLaunch = { openApp(it) },
+                                    onMenu = { menu = it },
+                                    onMove = { pkg, delta -> moveTile("$prefix:$pkg", delta) },
+                                    onMoveDone = { moving = null },
+                                )
+                            }
+                        }
                         Spacer(Modifier.height(Space.xl))
                         Shelf(
                             title = "Все приложения",
@@ -404,6 +512,8 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                             onMenu = { menu = it },
                             empty = { ShelfHint("Все приложения скрыты. Вернуть их можно в\u00A0настройках, раздел «Главный экран»") },
                         )
+                        Spacer(Modifier.height(Layout.safeBottom))
+                    }
                     }
                 }
             }
@@ -417,6 +527,7 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                 AppMenu(
                     target = target,
                     isFavorite = target.app.pkg in favorites,
+                    canMove = target.focusKey.startsWith("row:") || target.app.pkg in favorites,
                     onAction = { action -> onMenuAction(target, action) },
                 )
             }
@@ -426,6 +537,12 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                     settings = settings,
                     apps = all.orEmpty(),
                     net = net,
+                    weather = weather,
+                    updater = updater,
+                    startApp = panelApp,
+                    onRefreshWeather = { scope.launch { weather.refresh(settings.city, force = true) } },
+                    onCheckUpdate = { scope.launch { updater.check() } },
+                    onInstallUpdate = { scope.launch { updater.downloadAndInstall() } },
                     onResetFavorites = {
                         favorites = emptyList()
                         store.clear()
@@ -436,7 +553,9 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                     },
                     onClosed = {
                         settingsOpen = false
-                        restoreFocus = SETTINGS_KEY
+                        restoreFocus = panelReturn?.takeIf { keyAlive(it) } ?: SETTINGS_KEY
+                        panelApp = null
+                        panelReturn = null
                     },
                 )
             }
@@ -453,6 +572,8 @@ private fun TopBar(
     settingsRequester: FocusRequester,
     interactive: Boolean,
     settingsActive: Boolean,
+    weather: WeatherNow?,
+    updateBadge: Boolean,
     onFocused: (String) -> Unit,
     onNetwork: () -> Unit,
     onSettings: () -> Unit,
@@ -484,6 +605,14 @@ private fun TopBar(
         } else {
             Spacer(Modifier.weight(1f))
         }
+        if (weather != null) {
+            BasicText(weather.tempText, style = Typo.date.copy(color = Palette.text), maxLines = 1)
+            if (weather.word.isNotEmpty()) {
+                Spacer(Modifier.width(Space.s))
+                BasicText(weather.word, style = Typo.date, maxLines = 1)
+            }
+            Spacer(Modifier.width(Space.l))
+        }
         // Значок сети тоже кнопка: Wi-Fi на стике настраивают чаще всего остального.
         BarButton(netRequester, interactive, active = false, onFocused = { onFocused(NET_KEY) }, onClick = onNetwork) { tint ->
             if (net == Net.Wifi) {
@@ -502,6 +631,7 @@ private fun TopBar(
             settingsRequester,
             interactive,
             active = settingsActive,
+            badge = updateBadge,
             onFocused = { onFocused(SETTINGS_KEY) },
             onClick = onSettings,
         ) { tint ->
@@ -526,6 +656,7 @@ private fun BarButton(
     active: Boolean,
     onFocused: () -> Unit,
     onClick: () -> Unit,
+    badge: Boolean = false,
     content: @Composable (Color) -> Unit,
 ) {
     val look = LocalLook.current
@@ -571,6 +702,17 @@ private fun BarButton(
         contentAlignment = Alignment.Center,
     ) {
         content(tint)
+        // Точка «есть обновление» на шестерёнке: заметно, но не кричит.
+        if (badge) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = 4.dp, y = 8.dp)
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(if (focused) look.onAccent else look.accent),
+            )
+        }
     }
 }
 
@@ -598,7 +740,14 @@ private fun Shelf(
     onMoveDone: () -> Unit = {},
     empty: @Composable () -> Unit = {},
 ) {
-    Column {
+    // Вертикальная прокрутка показывает ряд целиком, с заголовком, а не только плитку в фокусе.
+    val shelfView = remember { BringIntoViewRequester() }
+    val shelfScope = rememberCoroutineScope()
+    Column(
+        Modifier
+            .bringIntoViewRequester(shelfView)
+            .onFocusChanged { if (it.hasFocus) shelfScope.launch { shelfView.bringIntoView() } },
+    ) {
         ShelfTitle(title)
         if (apps.isEmpty()) {
             Box(
@@ -624,7 +773,7 @@ private fun Shelf(
                         labels = labels,
                         focusRequester = registry[key],
                         interactive = interactive,
-                        isMoving = keyPrefix == "fav" && moving == app.pkg,
+                        isMoving = moving == key,
                         onFocused = { onFocused(key) },
                         onClick = { onLaunch(app) },
                         onMenu = { rect -> onMenu(MenuTarget(app, key, rect)) },

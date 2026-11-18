@@ -70,6 +70,15 @@ private enum class Page(val title: String) {
     Comfort("Прозрачность и анимации"),
     System("Настройки Android"),
     About("О Полке"),
+    Rows("Ряды"),
+    RowNew("Новый ряд"),
+    RowDetail("Ряд"),
+    RowApps("Приложения в ряду"),
+    AppRows("Добавить в ряд"),
+    Weather("Погода"),
+    Cities("Город"),
+    Dream("Заставка"),
+    Update("Обновление"),
 }
 
 /** Общее для всех строк панели: куда регистрировать фокус и можно ли сейчас нажимать. */
@@ -86,6 +95,12 @@ fun SettingsPanel(
     settings: LauncherSettings,
     apps: List<AppEntry>,
     net: Net,
+    weather: WeatherModel,
+    updater: Updater,
+    startApp: String?,
+    onRefreshWeather: () -> Unit,
+    onCheckUpdate: () -> Unit,
+    onInstallUpdate: () -> Unit,
     onResetFavorites: () -> Unit,
     onResetStats: () -> Unit,
     onClosed: () -> Unit,
@@ -96,9 +111,15 @@ fun SettingsPanel(
     val registry = remember { FocusRegistry() }
     val appear = remember { Animatable(0f) }
     val pageIn = remember { Animatable(1f) }
-    var stack by remember { mutableStateOf(listOf(Page.Main)) }
+    // Из меню плитки панель открывается сразу на рядах этого приложения, «Назад» её закрывает.
+    var stack by remember { mutableStateOf(listOf(if (startApp != null) Page.AppRows else Page.Main)) }
     var returnKeys by remember { mutableStateOf(emptyList<String>()) }
-    var focusKey by remember { mutableStateOf<String?>("main:walls") }
+    var focusKey by remember {
+        mutableStateOf<String?>(
+            if (startApp != null) settings.rows.firstOrNull()?.let { "approws:${it.id}" } ?: "approws:new" else "main:walls",
+        )
+    }
+    var rowId by remember { mutableStateOf<String?>(null) }
     var navTick by remember { mutableIntStateOf(0) }
     var focusTick by remember { mutableIntStateOf(0) }
     var direction by remember { mutableIntStateOf(1) }
@@ -141,7 +162,16 @@ fun SettingsPanel(
         Page.Startup -> apps.firstOrNull { it.pkg == settings.autostart }?.let { "startup:${it.pkg}" } ?: "startup:none"
         Page.Comfort -> "comfort:glass"
         Page.System -> "sys:net"
-        Page.About -> if (context.isDefaultHome()) "about:favs" else "about:home"
+        Page.About -> "about:update"
+        Page.Rows -> settings.rows.firstOrNull()?.let { "rows:${it.id}" } ?: "rows:new"
+        Page.RowNew -> ROW_NAMES.firstOrNull { name -> settings.rows.none { it.title == name } }?.let { "newrow:$it" }
+        Page.RowDetail -> "row:apps"
+        Page.RowApps -> apps.firstOrNull { it.pkg !in settings.hidden }?.let { "rowapp:${it.pkg}" }
+        Page.AppRows -> settings.rows.firstOrNull()?.let { "approws:${it.id}" } ?: "approws:new"
+        Page.Weather -> "weather:on"
+        Page.Cities -> "city:${settings.city.name}"
+        Page.Dream -> "dream:open"
+        Page.Update -> if (updater.available != null) "update:install" else "update:check"
     }
 
     fun push(target: Page, from: String) {
@@ -161,6 +191,15 @@ fun SettingsPanel(
         returnKeys = returnKeys.dropLast(1)
         stack = stack.dropLast(1)
         direction = -1
+        navTick++
+    }
+
+    /** Заменить верхнюю страницу: «Новый ряд» после выбора названия сразу становится этим рядом. */
+    fun replaceTop(target: Page, from: String) {
+        stack = stack.dropLast(1) + target
+        returnKeys = returnKeys.dropLast(1) + from
+        focusKey = initialKey(target)
+        direction = 1
         navTick++
     }
 
@@ -199,8 +238,15 @@ fun SettingsPanel(
                 .glass(RoundedCornerShape(Radius.panel), dense = true)
                 .padding(Space.m),
         ) {
+            val currentRow = settings.rows.firstOrNull { it.id == rowId }
+            val header = when (page) {
+                Page.RowDetail -> currentRow?.title ?: page.title
+                Page.RowApps -> currentRow?.let { "«${it.title}»: приложения" } ?: page.title
+                Page.AppRows -> apps.firstOrNull { it.pkg == startApp }?.let { "Ряды для «${it.label}»" } ?: page.title
+                else -> page.title
+            }
             BasicText(
-                page.title,
+                header,
                 style = Typo.panelTitle,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -223,6 +269,12 @@ fun SettingsPanel(
                             env = env,
                             settings = settings,
                             startupTitle = apps.firstOrNull { it.pkg == settings.autostart }?.label ?: "ничего",
+                            weatherValue = if (!settings.weatherOn) {
+                                "выключена"
+                            } else {
+                                weather.current(settings.city)?.tempText ?: "включена"
+                            },
+                            hasUpdate = updater.available != null,
                             onPush = { target, from -> push(target, from) },
                         )
                         Page.Walls -> WallsPage(env, settings)
@@ -250,6 +302,67 @@ fun SettingsPanel(
                             onResetFavorites = onResetFavorites,
                             onResetStats = onResetStats,
                             onStatus = { status = it },
+                            updateValue = when (val s = updater.state) {
+                                is UpdateState.Available -> "есть ${s.version}"
+                                is UpdateState.Downloading -> "${s.percent}\u00A0%"
+                                is UpdateState.Latest -> "последняя"
+                                else -> null
+                            },
+                            onPush = { target, from -> push(target, from) },
+                        )
+                        Page.Rows -> RowsPage(
+                            env = env,
+                            settings = settings,
+                            apps = apps,
+                            onOpenRow = { id ->
+                                rowId = id
+                                push(Page.RowDetail, "rows:$id")
+                            },
+                            onNewRow = { push(Page.RowNew, "rows:new") },
+                        )
+                        Page.RowNew -> RowNewPage(env, settings) { name ->
+                            val app = startApp
+                            if (app != null && stack.getOrNull(stack.size - 2) == Page.AppRows) {
+                                // Из меню плитки: ряд сразу с этим приложением, назад к списку рядов.
+                                val id = settings.addRow(name, listOf(app))
+                                pop()
+                                focusKey = "approws:$id"
+                            } else {
+                                val id = settings.addRow(name)
+                                rowId = id
+                                replaceTop(Page.RowDetail, "rows:$id")
+                            }
+                        }
+                        Page.RowDetail -> RowDetailPage(
+                            env = env,
+                            settings = settings,
+                            row = currentRow,
+                            apps = apps,
+                            onApps = { push(Page.RowApps, "row:apps") },
+                            onDeleted = {
+                                pop()
+                                focusKey = settings.rows.firstOrNull()?.let { "rows:${it.id}" } ?: "rows:new"
+                            },
+                        )
+                        Page.RowApps -> RowAppsPage(env, settings, currentRow, apps)
+                        Page.AppRows -> AppRowsPage(env, settings, startApp.orEmpty()) {
+                            push(Page.RowNew, "approws:new")
+                        }
+                        Page.Weather -> WeatherPage(
+                            env = env,
+                            settings = settings,
+                            weather = weather,
+                            onCities = { push(Page.Cities, "weather:city") },
+                            onRefresh = onRefreshWeather,
+                        )
+                        Page.Cities -> CitiesPage(env, settings)
+                        Page.Dream -> DreamPage(env, onOpen = { openScreen(SystemScreen.Screensaver) })
+                        Page.Update -> UpdatePage(
+                            env = env,
+                            settings = settings,
+                            updater = updater,
+                            onCheck = onCheckUpdate,
+                            onInstall = onInstallUpdate,
                         )
                     }
                 }
@@ -275,6 +388,8 @@ private fun MainPage(
     env: RowEnv,
     settings: LauncherSettings,
     startupTitle: String,
+    weatherValue: String,
+    hasUpdate: Boolean,
     onPush: (Page, String) -> Unit,
 ) {
     PanelRow(env, "main:walls", "Обои", value = settings.wallpaper.title, chevron = true) {
@@ -289,6 +404,18 @@ private fun MainPage(
     PanelRow(env, "main:home", "Главный экран", chevron = true) {
         onPush(Page.Shelves, "main:home")
     }
+    PanelRow(
+        env, "main:rows", "Ряды",
+        value = if (settings.rows.isEmpty()) "нет" else settings.rows.size.toString(), chevron = true,
+    ) {
+        onPush(Page.Rows, "main:rows")
+    }
+    PanelRow(env, "main:weather", "Погода", value = weatherValue, chevron = true) {
+        onPush(Page.Weather, "main:weather")
+    }
+    PanelRow(env, "main:dream", "Заставка", chevron = true) {
+        onPush(Page.Dream, "main:dream")
+    }
     PanelRow(env, "main:startup", "При включении", value = startupTitle, chevron = true) {
         onPush(Page.Startup, "main:startup")
     }
@@ -298,7 +425,7 @@ private fun MainPage(
     PanelRow(env, "main:system", "Настройки Android", chevron = true) {
         onPush(Page.System, "main:system")
     }
-    PanelRow(env, "main:about", "О Полке", chevron = true) {
+    PanelRow(env, "main:about", "О Полке", value = if (hasUpdate) "есть обновление" else null, chevron = true) {
         onPush(Page.About, "main:about")
     }
 }
@@ -551,6 +678,8 @@ private fun AboutPage(
     onResetFavorites: () -> Unit,
     onResetStats: () -> Unit,
     onStatus: (String) -> Unit,
+    updateValue: String?,
+    onPush: (Page, String) -> Unit,
 ) {
     val context = LocalContext.current
     val version = remember { context.versionName() }
@@ -568,6 +697,9 @@ private fun AboutPage(
         if (isHome) {
             BasicText("Открывается по\u00A0кнопке «Домой»", style = Typo.smallSecondary)
         }
+    }
+    PanelRow(env, "about:update", "Обновление", value = updateValue, chevron = true) {
+        onPush(Page.Update, "about:update")
     }
     if (!isHome) {
         PanelRow(env, "about:home", "Сделать главным экраном") {
@@ -784,4 +916,227 @@ private fun Toggle(on: Boolean, focused: Boolean) {
                 .background(knob),
         )
     }
+}
+
+@Composable
+private fun PanelHint(text: String) {
+    BasicText(
+        text,
+        style = Typo.smallSecondary,
+        modifier = Modifier.padding(start = Space.l, end = Space.l, top = Space.xs, bottom = Space.s),
+    )
+}
+
+/** Свои ряды: между «Избранным» и «Всеми приложениями», в этом порядке. */
+@Composable
+private fun RowsPage(
+    env: RowEnv,
+    settings: LauncherSettings,
+    apps: List<AppEntry>,
+    onOpenRow: (String) -> Unit,
+    onNewRow: () -> Unit,
+) {
+    val shown = apps.filter { it.pkg !in settings.hidden }.mapTo(HashSet()) { it.pkg }
+    if (settings.rows.isEmpty()) {
+        PanelHint("Свои ряды встают между «Избранным» и\u00A0«Всеми приложениями». Например, «Кино» или\u00A0«Музыка».")
+    }
+    settings.rows.forEach { row ->
+        val count = row.apps.count { it in shown }
+        PanelRow(
+            env, "rows:${row.id}", row.title,
+            value = if (count == 0) "пусто" else appsCount(count), chevron = true,
+        ) {
+            onOpenRow(row.id)
+        }
+    }
+    PanelRow(env, "rows:new", "Новый ряд", chevron = true) { onNewRow() }
+}
+
+@Composable
+private fun RowNewPage(env: RowEnv, settings: LauncherSettings, onPick: (String) -> Unit) {
+    val free = ROW_NAMES.filter { name -> settings.rows.none { it.title == name } }
+    if (free.isEmpty()) {
+        PanelHint("Все названия уже заняты. Удали лишний ряд или переименуй его.")
+        return
+    }
+    free.forEach { name ->
+        PanelRow(env, "newrow:$name", name) { onPick(name) }
+    }
+}
+
+@Composable
+private fun RowDetailPage(
+    env: RowEnv,
+    settings: LauncherSettings,
+    row: AppRow?,
+    apps: List<AppEntry>,
+    onApps: () -> Unit,
+    onDeleted: () -> Unit,
+) {
+    if (row == null) return
+    val shown = apps.filter { it.pkg !in settings.hidden }.mapTo(HashSet()) { it.pkg }
+    val count = row.apps.count { it in shown }
+    val rows = settings.rows
+    val index = rows.indexOfFirst { it.id == row.id }
+    // Название листается по свободным именам: два ряда «Кино» только запутают.
+    val names = ROW_NAMES.filter { name -> name == row.title || rows.none { it.title == name } }
+    fun rename(delta: Int) {
+        val i = names.indexOf(row.title).coerceAtLeast(0)
+        settings.renameRow(row.id, names[(i + delta).mod(names.size)])
+    }
+    PanelRow(
+        env, "row:apps", "Приложения",
+        value = if (count == 0) "пусто" else appsCount(count), chevron = true,
+    ) {
+        onApps()
+    }
+    PanelRow(env, "row:name", "Название", value = row.title, onStep = { rename(it) }) { rename(1) }
+    if (rows.size > 1) {
+        PanelRow(
+            env, "row:place", "Место среди рядов",
+            value = "${index + 1} из\u00A0${rows.size}",
+            onStep = { settings.moveRow(row.id, it) },
+        ) {
+            settings.moveRow(row.id, if (index == rows.lastIndex) -index else 1)
+        }
+    }
+    ConfirmRow(env, "row:delete", "Удалить ряд") {
+        settings.deleteRow(row.id)
+        onDeleted()
+    }
+    PanelHint("Порядок плиток внутри ряда: зажми OK на\u00A0плитке и\u00A0выбери «Переставить».")
+}
+
+@Composable
+private fun RowAppsPage(env: RowEnv, settings: LauncherSettings, row: AppRow?, apps: List<AppEntry>) {
+    if (row == null) return
+    PanelHint("OK добавляет приложение в\u00A0ряд или убирает из\u00A0него")
+    apps.filter { it.pkg !in settings.hidden }.forEach { app ->
+        PanelRow(
+            env, "rowapp:${app.pkg}", app.label,
+            leading = { AppGlyph(app) },
+            selected = app.pkg in row.apps,
+        ) {
+            settings.toggleInRow(row.id, app.pkg)
+        }
+    }
+}
+
+/** Открывается из меню плитки: в какие ряды положить это приложение. */
+@Composable
+private fun AppRowsPage(env: RowEnv, settings: LauncherSettings, pkg: String, onNewRow: () -> Unit) {
+    if (settings.rows.isEmpty()) {
+        PanelHint("Рядов пока нет. Создай первый, и\u00A0приложение сразу в\u00A0него попадёт.")
+    }
+    settings.rows.forEach { row ->
+        PanelRow(env, "approws:${row.id}", row.title, selected = pkg in row.apps) {
+            settings.toggleInRow(row.id, pkg)
+        }
+    }
+    PanelRow(env, "approws:new", "Новый ряд", chevron = true) { onNewRow() }
+}
+
+@Composable
+private fun WeatherPage(
+    env: RowEnv,
+    settings: LauncherSettings,
+    weather: WeatherModel,
+    onCities: () -> Unit,
+    onRefresh: () -> Unit,
+) {
+    PanelRow(env, "weather:on", "Показывать погоду", toggle = settings.weatherOn) {
+        settings.updateWeatherOn(!settings.weatherOn)
+    }
+    PanelRow(env, "weather:city", "Город", value = settings.city.title, chevron = true) { onCities() }
+    PanelRow(env, "weather:refresh", "Обновить сейчас", value = if (weather.loading) "загружаю" else null) {
+        if (!weather.loading) onRefresh()
+    }
+    val now = weather.now?.takeIf { it.city == settings.city }
+    PanelHint(
+        when {
+            now != null -> "Сейчас " + listOf(now.tempText, now.word).filter { it.isNotEmpty() }.joinToString(" ") +
+                ", обновлено в\u00A0${now.updatedText()}"
+            weather.failed -> "Не получилось загрузить погоду. Проверь интернет"
+            else -> "Погода появится в\u00A0шапке рядом с\u00A0часами"
+        },
+    )
+    PanelHint("Данные Open-Meteo.com, запрос не\u00A0чаще раза в\u00A030 минут")
+}
+
+@Composable
+private fun CitiesPage(env: RowEnv, settings: LauncherSettings) {
+    City.entries.forEach { city ->
+        PanelRow(env, "city:${city.name}", city.title, selected = settings.city == city) {
+            settings.updateCity(city)
+        }
+    }
+}
+
+@Composable
+private fun DreamPage(env: RowEnv, onOpen: () -> Unit) {
+    PanelHint(
+        "Крупные часы поверх обоев Полки. Фон медленно движется, а\u00A0часы раз в\u00A0минуту чуть смещаются, " +
+            "чтобы экран не\u00A0выгорал.",
+    )
+    PanelRow(env, "dream:open", "Выбрать заставку") { onOpen() }
+    PanelHint("В настройках Android выбери «Полка». Обои, формат времени и\u00A0дата берутся отсюда.")
+}
+
+@Composable
+private fun UpdatePage(
+    env: RowEnv,
+    settings: LauncherSettings,
+    updater: Updater,
+    onCheck: () -> Unit,
+    onInstall: () -> Unit,
+) {
+    val state = updater.state
+    val line = when (state) {
+        UpdateState.Idle -> "Ещё не проверяли"
+        UpdateState.Checking -> "Проверяю GitHub"
+        is UpdateState.Latest -> "Это последняя версия"
+        is UpdateState.Available -> "Доступна версия ${state.version}"
+        is UpdateState.Downloading -> "Скачиваю ${state.version}: ${state.percent}\u00A0%"
+        is UpdateState.Installing -> "Открываю установщик"
+        is UpdateState.Failed -> state.message
+    }
+    Column(Modifier.padding(start = Space.l, end = Space.l, bottom = Space.m)) {
+        BasicText("Установлена ${updater.installed}", style = Typo.body)
+        Spacer(Modifier.height(Space.xs))
+        BasicText(line, style = Typo.smallSecondary)
+        if (state is UpdateState.Available && state.notes.isNotEmpty()) {
+            BasicText(state.notes, style = Typo.smallSecondary, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        }
+        val installMessage = InstallStatus.message
+        if (installMessage != null) BasicText(installMessage, style = Typo.smallSecondary)
+    }
+    // Строка установки не пропадает во время скачивания, чтобы фокус не улетел в пустоту.
+    val target = when (state) {
+        is UpdateState.Available -> state.version
+        is UpdateState.Downloading -> state.version
+        is UpdateState.Installing -> state.version
+        else -> null
+    }
+    if (target != null) {
+        PanelRow(
+            env, "update:install", "Скачать и установить $target",
+            value = (state as? UpdateState.Downloading)?.let { "${it.percent}\u00A0%" },
+        ) {
+            if (!updater.busy) onInstall()
+        }
+    }
+    PanelRow(
+        env, "update:check", "Проверить сейчас",
+        value = if (state == UpdateState.Checking) "проверяю" else null,
+    ) {
+        if (!updater.busy) onCheck()
+    }
+    PanelRow(
+        env, "update:auto", "Проверять автоматически",
+        description = "Раз в\u00A012 часов, пока Полка на\u00A0экране",
+        toggle = settings.autoUpdate,
+    ) {
+        settings.updateAutoUpdate(!settings.autoUpdate)
+    }
+    PanelHint("Новые версии берутся из\u00A0релизов github.com/$UPDATE_REPO")
 }
