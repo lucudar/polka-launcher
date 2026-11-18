@@ -4,7 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -41,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -130,7 +131,7 @@ fun SettingsPanel(
 
     LaunchedEffect(Unit) {
         if (look.reduceMotion) appear.snapTo(1f)
-        else appear.animateTo(1f, tween(240, easing = FastOutSlowInEasing))
+        else appear.animateTo(1f, tween(240, easing = Ease))
     }
     LaunchedEffect(navTick, focusTick) {
         registry.requestWithRetry(focusKey)
@@ -139,11 +140,11 @@ fun SettingsPanel(
     LaunchedEffect(navTick) {
         if (navTick == 0 || look.reduceMotion) return@LaunchedEffect
         pageIn.snapTo(0f)
-        pageIn.animateTo(1f, tween(220, easing = FastOutSlowInEasing))
+        pageIn.animateTo(1f, tween(220, easing = Ease))
     }
     LaunchedEffect(closing) {
         if (!closing) return@LaunchedEffect
-        if (!look.reduceMotion) appear.animateTo(0f, tween(160, easing = FastOutSlowInEasing))
+        if (!look.reduceMotion) appear.animateTo(0f, tween(160, easing = Ease))
         closed()
     }
     LaunchedEffect(status) {
@@ -234,7 +235,7 @@ fun SettingsPanel(
                 }
                 .width(Layout.panelWidth)
                 // Панель по высоте содержимого: короткий раздел не тащит за собой пустое стекло.
-                .animateContentSize(motion(220))
+                .animateContentSize(growth())
                 .glass(RoundedCornerShape(Radius.panel), dense = true)
                 .padding(Space.m),
         ) {
@@ -770,7 +771,8 @@ private fun PanelRow(
 ) {
     val look = LocalLook.current
     var focused by remember { mutableStateOf(false) }
-    val fill by animateColorAsState(
+    // Заливка читается при отрисовке: смена фокуса не пересобирает строку 9 кадров подряд.
+    val fill = animateColorAsState(
         when {
             focused && danger -> Palette.danger
             focused -> look.accent
@@ -792,7 +794,7 @@ private fun PanelRow(
             .fillMaxWidth()
             .height(if (description != null) Layout.rowTall else Layout.row)
             .clip(RoundedCornerShape(Radius.row))
-            .background(fill)
+            .drawBehind { drawRect(fill.value) }
             .focusRequester(env.registry[key])
             .onFocusChanged {
                 focused = it.isFocused

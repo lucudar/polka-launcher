@@ -2,8 +2,7 @@ package dev.lucudar.polka
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
@@ -24,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -64,7 +64,7 @@ fun AppMenu(target: MenuTarget, isFavorite: Boolean, canMove: Boolean, onAction:
     LaunchedEffect(target) {
         launch {
             if (look.reduceMotion) appear.snapTo(1f)
-            else appear.animateTo(1f, tween(durationMillis = 200, easing = FastOutSlowInEasing))
+            else appear.animateTo(1f, spring(dampingRatio = 0.82f, stiffness = 700f))
         }
         repeat(20) {
             if (runCatching { first.requestFocus() }.isSuccess) return@LaunchedEffect
@@ -89,10 +89,11 @@ fun AppMenu(target: MenuTarget, isFavorite: Boolean, canMove: Boolean, onAction:
                     layout(constraints.maxWidth, constraints.maxHeight) { placeable.place(x, y) }
                 }
                 .graphicsLayer {
+                    // Пружина чуть перелетает: масштаб это переживает, прозрачность держим в 0..1.
                     val t = appear.value
-                    alpha = t
-                    scaleX = 0.92f + 0.08f * t
-                    scaleY = 0.92f + 0.08f * t
+                    alpha = t.coerceIn(0f, 1f)
+                    scaleX = 0.9f + 0.1f * t
+                    scaleY = 0.9f + 0.1f * t
                     transformOrigin = TransformOrigin(0.5f, if (placeBelow) 0f else 1f)
                 }
                 .width(Layout.menuWidth)
@@ -123,14 +124,15 @@ fun AppMenu(target: MenuTarget, isFavorite: Boolean, canMove: Boolean, onAction:
 private fun MenuItem(label: String, requester: FocusRequester?, onClick: () -> Unit) {
     val look = LocalLook.current
     var focused by remember { mutableStateOf(false) }
-    val fill by animateColorAsState(if (focused) look.accent else Color.Transparent, motion(140), label = "menuFill")
+    // Заливка читается при отрисовке: смена фокуса не пересобирает строку 9 кадров подряд.
+    val fill = animateColorAsState(if (focused) look.accent else Color.Transparent, motion(140), label = "menuFill")
     val color by animateColorAsState(if (focused) look.onAccent else Palette.text, motion(140), label = "menuText")
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(52.dp)
             .clip(RoundedCornerShape(Radius.menuItem))
-            .background(fill)
+            .drawBehind { drawRect(fill.value) }
             .then(if (requester != null) Modifier.focusRequester(requester) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .selectKeys(onClick = onClick)

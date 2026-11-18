@@ -1,8 +1,11 @@
 package dev.lucudar.polka
 
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -15,6 +18,7 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -100,10 +104,30 @@ val LocalLook = staticCompositionLocalOf {
     )
 }
 
+/**
+ * Плавный выход без затяжного хвоста: быстро стартует и мягко садится.
+ * FastOutSlowIn раскачивался слишком долго, на пульте это читалось как задержка.
+ */
+val Ease = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+
 /** Те же состояния, но при «без анимаций» они меняются мгновенно. */
 @Composable
 fun <T> motion(durationMillis: Int): FiniteAnimationSpec<T> =
-    if (LocalLook.current.reduceMotion) snap() else tween(durationMillis, easing = FastOutSlowInEasing)
+    if (LocalLook.current.reduceMotion) snap() else tween(durationMillis, easing = Ease)
+
+/** Масштаб плитки в фокусе: пружина с лёгким перелётом, плитка «встаёт», а не плывёт. */
+@Composable
+fun pop(): FiniteAnimationSpec<Float> =
+    if (LocalLook.current.reduceMotion) snap() else spring(dampingRatio = 0.68f, stiffness = 560f)
+
+/** Размер панели: критическое затухание, без дрожи в конце. */
+@Composable
+fun growth(): FiniteAnimationSpec<IntSize> =
+    if (LocalLook.current.reduceMotion) {
+        snap()
+    } else {
+        spring(dampingRatio = 1f, stiffness = Spring.StiffnessMediumLow, visibilityThreshold = IntSize.VisibilityThreshold)
+    }
 
 /** Onest: гротеск, который рисовали под кириллицу. Три статичных начертания, ~50 КБ каждое. */
 val Onest = FontFamily(

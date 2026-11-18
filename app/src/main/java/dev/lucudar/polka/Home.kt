@@ -3,12 +3,14 @@ package dev.lucudar.polka
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -23,12 +25,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -36,6 +37,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -44,40 +46,65 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInRoot
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import android.content.res.Resources
+import android.graphics.BitmapFactory
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Shader
+import kotlin.math.roundToInt
 import android.view.KeyEvent as NativeKeyEvent
 
 private const val SETTINGS_KEY = "settings"
 private const val NET_KEY = "net"
+
+/** Хвост ключа для плитки «+» в конце ряда: fav:+ или row:id:+. */
+private const val ADD = "+"
 
 data class MenuTarget(val app: AppEntry, val focusKey: String, val anchor: Rect)
 
@@ -126,7 +153,12 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
     val updater = remember { Updater(context) }
     val scope = rememberCoroutineScope()
     val rowStates = remember { mutableMapOf<String, LazyListState>() }
-    val scroll = rememberScrollState()
+    // Вертикаль ведём сами: ряд в фокусе встаёт к верху области, одной пружиной.
+    val shift = remember { Animatable(0f) }
+    var viewH by remember { mutableIntStateOf(0) }
+    var contentH by remember { mutableIntStateOf(0) }
+    // Быстрое добавление: префикс ряда, для которого открыта сетка (fav или row:id).
+    var pickerFor by remember { mutableStateOf<String?>(null) }
     var toast by remember { mutableStateOf<String?>(null) }
     var restoreFocus by remember { mutableStateOf<String?>(null) }
     var lastFocus by remember { mutableStateOf<String?>(null) }
@@ -167,10 +199,11 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
             emptyList()
         } else {
             val byPkg = visible.associateBy { it.pkg }
-            customRows.map { row -> row to row.apps.mapNotNull { byPkg[it] } }.filter { it.second.isNotEmpty() }
+            // Пустой ряд тоже виден: в нём сразу «+», чтобы наполнить.
+            customRows.map { row -> row to row.apps.mapNotNull { byPkg[it] } }
         }
     }
-    val interactive = menu == null && !settingsOpen
+    val interactive = menu == null && !settingsOpen && pickerFor == null
 
     fun listFor(prefix: String): List<AppEntry> = when {
         prefix == "fav" -> favList
@@ -178,8 +211,23 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         else -> visible.orEmpty()
     }
 
-    fun keyAlive(key: String): Boolean = key == SETTINGS_KEY || key == NET_KEY ||
-        listFor(key.substringBeforeLast(':')).any { it.pkg == key.substringAfterLast(':') }
+    fun keyAlive(key: String): Boolean {
+        if (key == SETTINGS_KEY || key == NET_KEY) return true
+        val prefix = key.substringBeforeLast(':')
+        val tail = key.substringAfterLast(':')
+        if (tail == ADD) return prefix == "fav" || rowApps.any { "row:${it.first.id}" == prefix }
+        return listFor(prefix).any { it.pkg == tail }
+    }
+
+    /** Ряд получил фокус: верх ряда к верху области, но не дальше конца списка. */
+    fun reveal(top: Int) {
+        val max = (contentH - viewH).coerceAtLeast(0)
+        val target = top.coerceIn(0, max).toFloat()
+        if (shift.targetValue == target) return
+        scope.launch {
+            if (calm) shift.snapTo(target) else shift.animateTo(target, spring(dampingRatio = 1f, stiffness = 380f))
+        }
+    }
 
     // Первый показ после включения стика: открыть выбранное приложение, ровно один раз за загрузку.
     fun runAutostart(loaded: List<AppEntry>) {
@@ -205,9 +253,9 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         val focusGone = when (val f = lastFocus) {
             null -> true
             SETTINGS_KEY, NET_KEY -> false
-            else -> f.substringAfterLast(':') !in shownPkgs
+            else -> f.substringAfterLast(':') != ADD && f.substringAfterLast(':') !in shownPkgs
         }
-        if (menu == null && !settingsOpen && (firstLoad || focusGone)) {
+        if (menu == null && !settingsOpen && pickerFor == null && (firstLoad || focusGone)) {
             registry.requestWithRetry(firstKey(shown, favoriteApps(shown, favorites)))
         }
     }
@@ -217,16 +265,23 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         if (homeTick == 0) return@LaunchedEffect
         menu = null
         settingsOpen = false
+        pickerFor = null
         moving = null
         val fresh = stats.snapshot()
         counts = fresh
         runCatching { favState.scrollToItem(0) }
         runCatching { allState.scrollToItem(0) }
         rowStates.values.forEach { runCatching { it.scrollToItem(0) } }
-        runCatching { scroll.scrollTo(0) }
+        shift.snapTo(0f)
         val loaded = apps ?: return@LaunchedEffect
         val shown = arrange(loaded, settings.hidden, settings.sort, fresh)
         registry.requestWithRetry(firstKey(shown, favoriteApps(shown, favorites)))
+    }
+
+    // Ряд удалили или он стал короче: не оставлять пустоту внизу.
+    LaunchedEffect(contentH, viewH) {
+        val max = (contentH - viewH).coerceAtLeast(0).toFloat()
+        if (shift.value > max) shift.snapTo(max)
     }
 
     LaunchedEffect(restoreFocus) {
@@ -369,41 +424,27 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         }
     }
 
-    CompositionLocalProvider(LocalBackdrop provides backdrop, LocalLook provides look) {
+    // Списки в панелях (настройки и прочее): своё правило вместо ТВ-пивота на 30 %, см. Scroll.kt.
+    val density = LocalDensity.current
+    val edgeSpec = remember(density, calm) { EdgeSpec(with(density) { Layout.row.toPx() }, calm) }
+
+    CompositionLocalProvider(
+        LocalBackdrop provides backdrop,
+        LocalLook provides look,
+        LocalBringIntoViewSpec provides edgeSpec,
+    ) {
         Box(Modifier.fillMaxSize().onSizeChanged { backdrop.rootSize = it }) {
-            // Смена обоев в настройках: мягкая смена кадра, стекло сразу берёт новую размытую копию.
-            Crossfade(targetState = wp, animationSpec = motion(320), label = "wallpaper") { w ->
+            // Обои запечены вместе со скримом и затемнением в одну картинку: на S905Y4 это один
+            // полноэкранный проход за кадр вместо трёх. Пока печётся, видна размытая копия.
+            val baked = rememberBakedWallpaper(wp, wallDim)
+            Crossfade(targetState = baked, animationSpec = motion(360), label = "wallpaper") { picture ->
                 Image(
-                    bitmap = ImageBitmap.imageResource(w.full),
+                    bitmap = picture ?: blurred,
                     contentDescription = null,
                     contentScale = ContentScale.FillBounds,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
-            // Скрим под контентом: ровно сверху и плавно темнее книзу. Сила подобрана под каждую
-            // картинку, чтобы заголовок над небом держал от 3,7:1 при норме 3:1 для крупного текста.
-            val scrimTop by animateFloatAsState(wp.scrimTop, motion(320), label = "scrimTop")
-            val scrimBottom by animateFloatAsState(wp.scrimBottom, motion(320), label = "scrimBottom")
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            0f to Color.Black.copy(alpha = scrimTop),
-                            0.12f to Color.Black.copy(alpha = scrimTop),
-                            1f to Color.Black.copy(alpha = scrimBottom),
-                        ),
-                    ),
-            )
-
-            // «Яркость обоев»: ровное затемнение поверх скрима, стекло приглушает свою копию так же.
-            val dimAlpha by animateFloatAsState(wallDim, motion(320), label = "wallDim")
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .graphicsLayer { alpha = dimAlpha }
-                    .background(Color.Black),
-            )
 
             val tiles = settings.tileSize
             val labels = settings.labels
@@ -414,7 +455,7 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                 val fixed = Layout.safeTop + Layout.barHeight + Layout.shelfChrome * 2 + Space.xl +
                     tiles.favH + tiles.allH + labelSpace * 2 + Layout.safeBottom
                 // Со своими рядами экран всё равно прокручивается: воздух под шапкой обычный.
-                val gap = if (rowApps.isNotEmpty()) Space.xl else (maxHeight - fixed).coerceIn(Space.l, Space.xxxl)
+                val gap = if (customRows.isNotEmpty()) Space.xl else (maxHeight - fixed).coerceIn(Space.l, Space.xxxl)
                 Column(Modifier.fillMaxSize().padding(top = Layout.safeTop)) {
                     TopBar(
                         clock = now.clockText(context, settings.clock),
@@ -441,11 +482,19 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                             .height(Layout.barHeight),
                     )
                     Spacer(Modifier.height(gap))
-                    Column(
+                    Box(
                         Modifier
                             .weight(1f)
                             .fillMaxWidth()
-                            .verticalScroll(scroll),
+                            .clipToBounds()
+                            .onSizeChanged { viewH = it.height },
+                    ) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .offset { IntOffset(0, -shift.value.roundToInt()) }
+                            .wrapContentHeight(align = Alignment.Top, unbounded = true)
+                            .onSizeChanged { contentH = it.height },
                     ) {
                     if (visible == null) {
                         ShelfTitle("Избранное")
@@ -470,7 +519,9 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                             onMenu = { menu = it },
                             onMove = { pkg, delta -> moveTile("fav:$pkg", delta) },
                             onMoveDone = { moving = null },
-                            empty = { ShelfHint("Зажми OK на\u00A0приложении ниже, и\u00A0оно появится здесь") },
+                            onReveal = { reveal(it) },
+                            onAdd = { pickerFor = "fav" },
+                            empty = { ShelfHint("Нажми «+» или зажми OK на\u00A0любом приложении ниже") },
                         )
                         rowApps.forEach { (row, list) ->
                             key(row.id) {
@@ -492,6 +543,9 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                                     onMenu = { menu = it },
                                     onMove = { pkg, delta -> moveTile("$prefix:$pkg", delta) },
                                     onMoveDone = { moving = null },
+                                    onReveal = { reveal(it) },
+                                    onAdd = { pickerFor = prefix },
+                                    empty = { ShelfHint("Пустой ряд: нажми «+» и\u00A0выбери приложения") },
                                 )
                             }
                         }
@@ -510,9 +564,11 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                             onFocused = { lastFocus = it },
                             onLaunch = { openApp(it) },
                             onMenu = { menu = it },
+                            onReveal = { reveal(it) },
                             empty = { ShelfHint("Все приложения скрыты. Вернуть их можно в\u00A0настройках, раздел «Главный экран»") },
                         )
                         Spacer(Modifier.height(Layout.safeBottom))
+                    }
                     }
                     }
                 }
@@ -530,6 +586,34 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                     canMove = target.focusKey.startsWith("row:") || target.app.pkg in favorites,
                     onAction = { action -> onMenuAction(target, action) },
                 )
+            }
+
+            pickerFor?.let { prefix ->
+                val isFav = prefix == "fav"
+                val rowId = prefix.removePrefix("row:")
+                val row = customRows.firstOrNull { it.id == rowId }
+                if (isFav || row != null) {
+                    AppPicker(
+                        title = "Добавить в «${if (isFav) "Избранное" else row?.title.orEmpty()}»",
+                        apps = visible.orEmpty(),
+                        selected = if (isFav) favorites.toSet() else row?.apps.orEmpty().toSet(),
+                        onToggle = { pkg ->
+                            if (isFav) {
+                                val next = if (pkg in favorites) favorites - pkg else favorites + pkg
+                                favorites = next
+                                store.write(next)
+                            } else {
+                                settings.toggleInRow(rowId, pkg)
+                            }
+                        },
+                        onClosed = {
+                            pickerFor = null
+                            restoreFocus = "$prefix:$ADD"
+                        },
+                    )
+                } else {
+                    LaunchedEffect(prefix) { pickerFor = null }
+                }
             }
 
             if (settingsOpen) {
@@ -736,50 +820,79 @@ private fun Shelf(
     onFocused: (String) -> Unit,
     onLaunch: (AppEntry) -> Unit,
     onMenu: (MenuTarget) -> Unit,
+    onReveal: (Int) -> Unit,
     onMove: (String, Int) -> Unit = { _, _ -> },
     onMoveDone: () -> Unit = {},
+    onAdd: (() -> Unit)? = null,
     empty: @Composable () -> Unit = {},
 ) {
-    // Вертикальная прокрутка показывает ряд целиком, с заголовком, а не только плитку в фокусе.
-    val shelfView = remember { BringIntoViewRequester() }
-    val shelfScope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val calm = LocalLook.current.reduceMotion
+    // Верх ряда внутри списка: не state, нужен только в момент, когда ряд получает фокус.
+    val top = remember { IntArray(1) }
+    val spec = remember(density, calm) { PinnedSpec(with(density) { Layout.safeH.toPx() }, calm) }
+    val slot = tileHeight + if (labels == TileLabels.Off) 0.dp else Layout.labelSpace
     Column(
         Modifier
-            .bringIntoViewRequester(shelfView)
-            .onFocusChanged { if (it.hasFocus) shelfScope.launch { shelfView.bringIntoView() } },
+            .onPlaced { top[0] = it.positionInParent().y.roundToInt() }
+            .onFocusChanged { if (it.hasFocus) onReveal(top[0]) },
     ) {
         ShelfTitle(title)
-        if (apps.isEmpty()) {
+        if (apps.isEmpty() && onAdd == null) {
             Box(
                 modifier = Modifier
                     .padding(start = Layout.safeH, top = Space.m, bottom = Space.l)
-                    .height(tileHeight + if (labels == TileLabels.Off) 0.dp else Layout.labelSpace),
+                    .height(slot),
                 contentAlignment = Alignment.CenterStart,
             ) { empty() }
         } else {
             // Вертикальный запас: плитка в фокусе растёт на 10 % и отбрасывает тень.
-            LazyRow(
-                state = state,
-                contentPadding = PaddingValues(start = Layout.safeH, end = Layout.safeH, top = Space.m, bottom = Space.l),
-                horizontalArrangement = Arrangement.spacedBy(Space.l),
-            ) {
-                itemsIndexed(apps, key = { _, app -> app.pkg }) { index, app ->
-                    val key = "$keyPrefix:${app.pkg}"
-                    AppTile(
-                        app = app,
-                        index = index,
-                        width = tileWidth,
-                        height = tileHeight,
-                        labels = labels,
-                        focusRequester = registry[key],
-                        interactive = interactive,
-                        isMoving = moving == key,
-                        onFocused = { onFocused(key) },
-                        onClick = { onLaunch(app) },
-                        onMenu = { rect -> onMenu(MenuTarget(app, key, rect)) },
-                        onMove = { delta -> onMove(app.pkg, delta) },
-                        onMoveDone = onMoveDone,
-                    )
+            CompositionLocalProvider(LocalBringIntoViewSpec provides spec) {
+                LazyRow(
+                    state = state,
+                    contentPadding = PaddingValues(start = Layout.safeH, end = Layout.safeH, top = Space.m, bottom = Space.l),
+                    horizontalArrangement = Arrangement.spacedBy(Space.l),
+                ) {
+                    itemsIndexed(apps, key = { _, app -> app.pkg }) { index, app ->
+                        val key = "$keyPrefix:${app.pkg}"
+                        AppTile(
+                            app = app,
+                            index = index,
+                            width = tileWidth,
+                            height = tileHeight,
+                            labels = labels,
+                            focusRequester = registry[key],
+                            interactive = interactive,
+                            isMoving = moving == key,
+                            onFocused = { onFocused(key) },
+                            onClick = { onLaunch(app) },
+                            onMenu = { rect -> onMenu(MenuTarget(app, key, rect)) },
+                            onMove = { delta -> onMove(app.pkg, delta) },
+                            onMoveDone = onMoveDone,
+                            // Перестановка и добавление: соседи разъезжаются, а не прыгают.
+                            modifier = if (calm) Modifier else Modifier.animateItem(),
+                        )
+                    }
+                    if (onAdd != null) {
+                        item(key = ADD) {
+                            val key = "$keyPrefix:$ADD"
+                            AddTile(
+                                width = tileWidth,
+                                height = tileHeight,
+                                labels = labels,
+                                requester = registry[key],
+                                interactive = interactive && moving == null,
+                                onFocused = { onFocused(key) },
+                                onClick = onAdd,
+                                modifier = if (calm) Modifier else Modifier.animateItem(),
+                            )
+                        }
+                    }
+                    if (apps.isEmpty()) {
+                        item(key = "hint") {
+                            Box(Modifier.height(tileHeight), contentAlignment = Alignment.CenterStart) { empty() }
+                        }
+                    }
                 }
             }
         }
@@ -801,57 +914,61 @@ private fun AppTile(
     onMenu: (Rect) -> Unit,
     onMove: (Int) -> Unit,
     onMoveDone: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val look = LocalLook.current
     var focused by remember { mutableStateOf(false) }
     var pressed by remember { mutableStateOf(false) }
-    var bounds by remember { mutableStateOf(Rect.Zero) }
+    // Координаты нужны только меню: храним без state, прокрутка ряда не пишет снапшот каждый кадр.
+    val place = remember { arrayOfNulls<LayoutCoordinates>(1) }
     val bringIntoView = remember { BringIntoViewRequester() }
     val shape = RoundedCornerShape(Radius.tile)
-    val scale by animateFloatAsState(
+    // Все анимации плитки читаются только при отрисовке: фокус не пересобирает плитку 10 кадров подряд.
+    val scale = animateFloatAsState(
         targetValue = when {
             isMoving -> 1.14f
             pressed -> 1.04f
             focused -> 1.1f
             else -> 1f
         },
-        animationSpec = motion(160),
+        animationSpec = pop(),
         label = "tileScale",
     )
-    val ring by animateColorAsState(
-        if (focused || isMoving) look.accent else Color.Transparent,
-        motion(160),
-        label = "tileRing",
-    )
-    val lift by animateDpAsState(
-        when {
-            isMoving -> 28.dp
-            focused -> 18.dp
-            else -> 0.dp
-        },
-        motion(160),
-        label = "tileLift",
-    )
+    val glow = animateFloatAsState(if (focused || isMoving) 1f else 0f, motion(180), label = "tileGlow")
+    val lift = if (isMoving) 28.dp else 18.dp
+    val accent = look.accent
 
     // В режиме перестановки ряд сам едет за плиткой.
     LaunchedEffect(index, isMoving) {
         if (isMoving) runCatching { bringIntoView.bringIntoView() }
     }
 
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             modifier = Modifier
                 .size(width, height)
-                .onGloballyPositioned { bounds = it.boundsInRoot() }
+                .onPlaced { place[0] = it }
                 .bringIntoViewRequester(bringIntoView)
                 .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
+                    scaleX = scale.value
+                    scaleY = scale.value
+                    shadowElevation = glow.value * lift.toPx()
+                    this.shape = shape
+                    clip = true
+                    ambientShadowColor = Palette.shadow
+                    spotShadowColor = Palette.shadow
                 }
-                .shadow(lift, shape, clip = false, ambientColor = Palette.shadow, spotColor = Palette.shadow)
-                .clip(shape)
                 .background(Palette.tile)
-                .border(2.dp, ring, shape)
+                .drawWithCache {
+                    val outline = shape.createOutline(size, layoutDirection, this)
+                    // Половина обводки уходит под обрезку слоя: видно ровно 2 dp внутри плитки.
+                    val ring = Stroke(4.dp.toPx())
+                    onDrawWithContent {
+                        drawContent()
+                        val a = glow.value
+                        if (a > 0.01f) drawOutline(outline, accent.copy(alpha = a), style = ring)
+                    }
+                }
                 .focusRequester(focusRequester)
                 .onFocusChanged {
                     focused = it.isFocused
@@ -878,7 +995,11 @@ private fun AppTile(
                         else -> false
                     }
                 }
-                .selectKeys(onClick = onClick, onLongPress = { onMenu(bounds) }, onPressed = { pressed = it })
+                .selectKeys(
+                    onClick = onClick,
+                    onLongPress = { onMenu(place[0]?.takeIf { it.isAttached }?.boundsInRoot() ?: Rect.Zero) },
+                    onPressed = { pressed = it },
+                )
                 .focusable(enabled = interactive),
             contentAlignment = Alignment.Center,
         ) {
@@ -914,22 +1035,154 @@ private fun AppTile(
                 }
             }
         }
-        // Подпись под плиткой: место занято всегда, поэтому ряд не прыгает, когда она проявляется в фокусе.
-        if (labels != TileLabels.Off) {
-            val shown = labels == TileLabels.Always || focused || isMoving
-            val labelAlpha by animateFloatAsState(if (shown) 1f else 0f, motion(160), label = "tileLabel")
-            BasicText(
-                app.label,
-                style = Typo.tileLabel,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .padding(top = Space.s)
-                    .width(width)
-                    .graphicsLayer { alpha = labelAlpha },
+        TileLabel(app.label, width, labels, focused || isMoving)
+    }
+}
+
+/** Подпись под плиткой: место занято всегда, поэтому ряд не прыгает, когда она проявляется в фокусе. */
+@Composable
+private fun TileLabel(text: String, width: Dp, labels: TileLabels, active: Boolean) {
+    if (labels == TileLabels.Off) return
+    val shown = labels == TileLabels.Always || active
+    val labelAlpha = animateFloatAsState(if (shown) 1f else 0f, motion(160), label = "tileLabel")
+    BasicText(
+        text,
+        style = Typo.tileLabel,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .padding(top = Space.s)
+            .width(width)
+            .graphicsLayer { alpha = labelAlpha.value },
+    )
+}
+
+/**
+ * «+» в конце ряда: пустой слот с пунктирной кромкой. В фокусе заливается акцентом,
+ * OK открывает сетку выбора приложений для этого ряда.
+ */
+@Composable
+private fun AddTile(
+    width: Dp,
+    height: Dp,
+    labels: TileLabels,
+    requester: FocusRequester,
+    interactive: Boolean,
+    onFocused: () -> Unit,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val look = LocalLook.current
+    var focused by remember { mutableStateOf(false) }
+    var pressed by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(Radius.tile)
+    val scale = animateFloatAsState(
+        when {
+            pressed -> 1.02f
+            focused -> 1.1f
+            else -> 1f
+        },
+        pop(),
+        label = "addScale",
+    )
+    val glow = animateFloatAsState(if (focused) 1f else 0f, motion(180), label = "addGlow")
+    val tint by animateColorAsState(if (focused) look.onAccent else Palette.textSecondary, motion(180), label = "addTint")
+    val accent = look.accent
+
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier
+                .size(width, height)
+                .graphicsLayer {
+                    scaleX = scale.value
+                    scaleY = scale.value
+                    shadowElevation = glow.value * 18.dp.toPx()
+                    this.shape = shape
+                    clip = true
+                    ambientShadowColor = Palette.shadow
+                    spotShadowColor = Palette.shadow
+                }
+                .drawWithCache {
+                    val inset = 1.5.dp.toPx()
+                    val dash = Stroke(
+                        width = 1.5.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(8.dp.toPx(), 6.dp.toPx())),
+                    )
+                    val corner = CornerRadius(Radius.tile.toPx() - inset)
+                    val inner = Size(size.width - inset * 2, size.height - inset * 2)
+                    onDrawBehind {
+                        val g = glow.value
+                        drawRect(Palette.tile.copy(alpha = 0.45f))
+                        if (g > 0.01f) drawRect(accent.copy(alpha = g))
+                        if (g < 0.99f) {
+                            drawRoundRect(
+                                color = Palette.textSecondary.copy(alpha = 0.6f * (1f - g)),
+                                topLeft = Offset(inset, inset),
+                                size = inner,
+                                cornerRadius = corner,
+                                style = dash,
+                            )
+                        }
+                    }
+                }
+                .focusRequester(requester)
+                .onFocusChanged {
+                    focused = it.isFocused
+                    if (it.isFocused) onFocused()
+                }
+                .selectKeys(onClick = onClick, onPressed = { pressed = it })
+                .focusable(enabled = interactive),
+            contentAlignment = Alignment.Center,
+        ) {
+            Image(
+                Icons.Filled.Add,
+                contentDescription = "Добавить приложения",
+                colorFilter = ColorFilter.tint(tint),
+                modifier = Modifier.size(32.dp),
             )
         }
+        TileLabel("Добавить", width, labels, focused)
     }
+}
+
+/** Обои + скрим + затемнение одной картинкой, в фоне. null, пока первая ещё печётся. */
+@Composable
+private fun rememberBakedWallpaper(wp: Wallpaper, dim: Float): ImageBitmap? {
+    val resources = LocalContext.current.resources
+    var baked by remember { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(wp, dim) {
+        val next = withContext(Dispatchers.Default) { runCatching { bakeWallpaper(resources, wp, dim) }.getOrNull() }
+        if (next != null) baked = next
+    }
+    return baked
+}
+
+/**
+ * Скрим ровный сверху и плавно темнее книзу. Сила подобрана под каждую картинку, чтобы заголовок
+ * над небом держал от 3,7:1 при норме 3:1 для крупного текста. «Яркость обоев» ложится поверх.
+ */
+private fun bakeWallpaper(resources: Resources, wp: Wallpaper, dim: Float): ImageBitmap {
+    val options = BitmapFactory.Options().apply {
+        inScaled = false
+        inMutable = true
+    }
+    val bitmap = BitmapFactory.decodeResource(resources, wp.full, options)
+    val canvas = android.graphics.Canvas(bitmap)
+    val w = bitmap.width.toFloat()
+    val h = bitmap.height.toFloat()
+    fun black(alpha: Float) = android.graphics.Color.argb((alpha.coerceIn(0f, 1f) * 255).roundToInt(), 0, 0, 0)
+    val paint = Paint().apply {
+        shader = LinearGradient(
+            0f, 0f, 0f, h,
+            intArrayOf(black(wp.scrimTop), black(wp.scrimTop), black(wp.scrimBottom)),
+            floatArrayOf(0f, 0.12f, 1f),
+            Shader.TileMode.CLAMP,
+        )
+    }
+    canvas.drawRect(0f, 0f, w, h, paint)
+    if (dim > 0f) canvas.drawColor(black(dim))
+    bitmap.prepareToDraw()
+    return bitmap.asImageBitmap()
 }
 
 @Composable
