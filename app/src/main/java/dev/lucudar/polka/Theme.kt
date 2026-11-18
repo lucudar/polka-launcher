@@ -89,6 +89,8 @@ data class Look(
     val solidTone: Color,
     val reduceMotion: Boolean,
     val wallDim: Float,
+    /** Лёгкие эффекты: без теней и без анимации размеров, см. [Effects]. */
+    val lite: Boolean = false,
 )
 
 val LocalLook = staticCompositionLocalOf {
@@ -123,7 +125,7 @@ fun pop(): FiniteAnimationSpec<Float> =
 /** Размер панели: критическое затухание, без дрожи в конце. */
 @Composable
 fun growth(): FiniteAnimationSpec<IntSize> =
-    if (LocalLook.current.reduceMotion) {
+    if (LocalLook.current.reduceMotion || LocalLook.current.lite) {
         snap()
     } else {
         spring(dampingRatio = 1f, stiffness = Spring.StiffnessMediumLow, visibilityThreshold = IntSize.VisibilityThreshold)

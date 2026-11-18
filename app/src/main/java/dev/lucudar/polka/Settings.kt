@@ -75,6 +75,17 @@ enum class WallBrightness(val title: String, val dim: Float) {
     Low("50\u00A0%", 0.5f),
 }
 
+/**
+ * Эффекты. «Лёгкие» убирают то, что дорого для слабого GPU: тени плиток и панелей, плавную смену
+ * обоев, растягивание панели. Движение (масштаб, прокрутка) остаётся. «Авто»: лёгкие на стиках
+ * с памятью меньше 3 ГБ, как Mi TV Stick 4K.
+ */
+enum class Effects(val title: String) {
+    Auto("авто"),
+    Full("полные"),
+    Lite("лёгкие"),
+}
+
 /** Шаг по кругу для настроек с несколькими значениями: OK и стрелки вправо/влево. */
 inline fun <reified E : Enum<E>> E.step(delta: Int): E {
     val values = enumValues<E>()
@@ -135,6 +146,50 @@ class LauncherSettings(context: Context) {
         private set
     var autoUpdate by mutableStateOf(prefs.getBoolean(K_AUTO_UPDATE, true))
         private set
+
+    // Главный экран: что показывать. По умолчанию всё как раньше.
+    var showFavorites by mutableStateOf(prefs.getBoolean(K_SHOW_FAVS, true))
+        private set
+    var showAllApps by mutableStateOf(prefs.getBoolean(K_SHOW_ALL, true))
+        private set
+    var rowTitles by mutableStateOf(prefs.getBoolean(K_ROW_TITLES, true))
+        private set
+    var addTiles by mutableStateOf(prefs.getBoolean(K_ADD_TILES, true))
+        private set
+    var showWifi by mutableStateOf(prefs.getBoolean(K_WIFI, true))
+        private set
+    var effects by mutableStateOf(prefs.readEnum(K_EFFECTS, Effects.Auto))
+        private set
+
+    fun updateShowFavorites(value: Boolean) {
+        showFavorites = value
+        prefs.edit().putBoolean(K_SHOW_FAVS, value).apply()
+    }
+
+    fun updateShowAllApps(value: Boolean) {
+        showAllApps = value
+        prefs.edit().putBoolean(K_SHOW_ALL, value).apply()
+    }
+
+    fun updateRowTitles(value: Boolean) {
+        rowTitles = value
+        prefs.edit().putBoolean(K_ROW_TITLES, value).apply()
+    }
+
+    fun updateAddTiles(value: Boolean) {
+        addTiles = value
+        prefs.edit().putBoolean(K_ADD_TILES, value).apply()
+    }
+
+    fun updateShowWifi(value: Boolean) {
+        showWifi = value
+        prefs.edit().putBoolean(K_WIFI, value).apply()
+    }
+
+    fun updateEffects(value: Effects) {
+        effects = value
+        prefs.edit().putString(K_EFFECTS, value.name).apply()
+    }
 
     /** Загрузка, на которой автозапуск уже сработал: перезапуск Полки в ту же загрузку его не повторит. */
     val handledBoot: Int
@@ -278,7 +333,15 @@ class LauncherSettings(context: Context) {
             .remove(K_WALLPAPER).remove(K_ACCENT).remove(K_CLOCK).remove(K_SORT)
             .remove(K_DATE).remove(K_SOLID).remove(K_MOTION).remove(K_HIDDEN)
             .remove(K_TILES).remove(K_LABELS).remove(K_BRIGHTNESS).remove(K_AUTOSTART)
+            .remove(K_SHOW_FAVS).remove(K_SHOW_ALL).remove(K_ROW_TITLES).remove(K_ADD_TILES)
+            .remove(K_WIFI).remove(K_EFFECTS)
             .apply()
+        showFavorites = true
+        showAllApps = true
+        rowTitles = true
+        addTiles = true
+        showWifi = true
+        effects = Effects.Auto
         wallpaper = Wallpaper.Lake
         accent = Accent.Amber
         clock = ClockMode.Auto
@@ -311,6 +374,12 @@ class LauncherSettings(context: Context) {
         const val K_WEATHER = "weather_on"
         const val K_CITY = "weather_city"
         const val K_AUTO_UPDATE = "auto_update"
+        const val K_SHOW_FAVS = "show_favorites"
+        const val K_SHOW_ALL = "show_all_apps"
+        const val K_ROW_TITLES = "row_titles"
+        const val K_ADD_TILES = "add_tiles"
+        const val K_WIFI = "show_wifi"
+        const val K_EFFECTS = "effects"
     }
 }
 

@@ -15,6 +15,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { HomeScreen(resumeTick = resumeTick, homeTick = homeTick) }
+        // Обои непрозрачные и на весь экран: чёрный фон окна под ними был лишним полноэкранным проходом.
+        window.setBackgroundDrawable(null)
     }
 
     /** Вернулись из приложения: пересобираем список (могли что-то поставить или удалить). */

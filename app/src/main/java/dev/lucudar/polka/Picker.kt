@@ -46,6 +46,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -69,10 +70,12 @@ private val PickH = 84.dp
 fun AppPicker(
     title: String,
     apps: List<AppEntry>,
-    selected: Set<String>,
+    selected: Set<String>?,
     onToggle: (String) -> Unit,
     onClosed: () -> Unit,
 ) {
+    // selected == null: это не выбор, а «Все приложения» при скрытом ряде. OK открывает приложение.
+    val launcher = selected == null
     val look = LocalLook.current
     val density = LocalDensity.current
     val closed by rememberUpdatedState(onClosed)
@@ -103,7 +106,10 @@ fun AppPicker(
         Box(
             Modifier
                 .fillMaxSize()
-                .graphicsLayer { alpha = appear.value.coerceIn(0f, 1f) }
+                .graphicsLayer {
+                    alpha = appear.value.coerceIn(0f, 1f)
+                    compositingStrategy = CompositingStrategy.ModulateAlpha
+                }
                 .background(Palette.dim),
         )
         Column(
@@ -112,6 +118,8 @@ fun AppPicker(
                 .graphicsLayer {
                     val t = appear.value
                     alpha = t.coerceIn(0f, 1f)
+                    // Без отдельного буфера под всю панель: альфа ложится на каждую операцию рисования.
+                    compositingStrategy = CompositingStrategy.ModulateAlpha
                     scaleX = 0.94f + 0.06f * t
                     scaleY = 0.94f + 0.06f * t
                     transformOrigin = TransformOrigin(0.5f, 0.5f)
@@ -133,13 +141,17 @@ fun AppPicker(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                BasicText(
-                    if (selected.isEmpty()) "пока пусто" else "в ряду: ${apps.count { it.pkg in selected }}",
-                    style = Typo.smallSecondary,
-                )
+                if (selected != null) {
+                    BasicText(
+                        if (selected.isEmpty()) "пока пусто" else "в ряду: ${apps.count { it.pkg in selected }}",
+                        style = Typo.smallSecondary,
+                    )
+                } else {
+                    BasicText(appsCountText(apps.size), style = Typo.smallSecondary)
+                }
             }
             BasicText(
-                "OK добавляет или убирает, «Назад» закрывает",
+                if (launcher) "OK открывает, «Назад» закрывает" else "OK добавляет или убирает, «Назад» закрывает",
                 style = Typo.smallSecondary,
                 modifier = Modifier.padding(start = Space.l, top = Space.xs, bottom = Space.s),
             )
@@ -153,10 +165,13 @@ fun AppPicker(
                     itemsIndexed(apps, key = { _, app -> app.pkg }) { index, app ->
                         PickTile(
                             app = app,
-                            checked = app.pkg in selected,
+                            checked = selected != null && app.pkg in selected,
                             enabled = !closing,
                             requester = if (index == 0) first else null,
-                            onClick = { onToggle(app.pkg) },
+                            onClick = {
+                                onToggle(app.pkg)
+                                if (launcher) closing = true
+                            },
                         )
                     }
                 }
@@ -198,7 +213,7 @@ private fun PickTile(
                     .graphicsLayer {
                         scaleX = scale.value
                         scaleY = scale.value
-                        shadowElevation = glow.value * 14.dp.toPx()
+                        shadowElevation = if (look.lite) 0f else glow.value * 14.dp.toPx()
                         this.shape = shape
                         clip = true
                         ambientShadowColor = Palette.shadow
@@ -244,6 +259,7 @@ private fun PickTile(
                     .graphicsLayer {
                         val m = mark.value
                         alpha = m.coerceIn(0f, 1f)
+                        compositingStrategy = CompositingStrategy.ModulateAlpha
                         scaleX = m
                         scaleY = m
                     }
@@ -267,4 +283,15 @@ private fun PickTile(
             modifier = Modifier.width(PickW),
         )
     }
+}
+
+private fun appsCountText(n: Int): String {
+    val mod10 = n % 10
+    val mod100 = n % 100
+    val word = when {
+        mod10 == 1 && mod100 != 11 -> "приложение"
+        mod10 in 2..4 && mod100 !in 12..14 -> "приложения"
+        else -> "приложений"
+    }
+    return "$n $word"
 }

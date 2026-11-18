@@ -1,5 +1,14 @@
 package dev.lucudar.polka
 
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.LinearEasing
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
@@ -45,6 +54,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.TransformOrigin
@@ -68,7 +78,7 @@ private enum class Page(val title: String) {
     Shelves("Главный экран"),
     Hidden("Скрытые приложения"),
     Startup("При включении"),
-    Comfort("Прозрачность и анимации"),
+    Comfort("Плавность и эффекты"),
     System("Настройки Android"),
     About("О Полке"),
     Rows("Ряды"),
@@ -99,6 +109,7 @@ fun SettingsPanel(
     weather: WeatherModel,
     updater: Updater,
     startApp: String?,
+    startUpdate: Boolean = false,
     onRefreshWeather: () -> Unit,
     onCheckUpdate: () -> Unit,
     onInstallUpdate: () -> Unit,
@@ -113,11 +124,26 @@ fun SettingsPanel(
     val appear = remember { Animatable(0f) }
     val pageIn = remember { Animatable(1f) }
     // Из меню плитки панель открывается сразу на рядах этого приложения, «Назад» её закрывает.
-    var stack by remember { mutableStateOf(listOf(if (startApp != null) Page.AppRows else Page.Main)) }
+    // Из капсулы «Обновить» в шапке: сразу страница обновления, «Назад» закрывает панель.
+    var stack by remember {
+        mutableStateOf(
+            listOf(
+                when {
+                    startApp != null -> Page.AppRows
+                    startUpdate -> Page.Update
+                    else -> Page.Main
+                },
+            ),
+        )
+    }
     var returnKeys by remember { mutableStateOf(emptyList<String>()) }
     var focusKey by remember {
         mutableStateOf<String?>(
-            if (startApp != null) settings.rows.firstOrNull()?.let { "approws:${it.id}" } ?: "approws:new" else "main:walls",
+            when {
+                startApp != null -> settings.rows.firstOrNull()?.let { "approws:${it.id}" } ?: "approws:new"
+                startUpdate -> if (updater.available != null) "update:install" else "update:check"
+                else -> "main:walls"
+            },
         )
     }
     var rowId by remember { mutableStateOf<String?>(null) }
@@ -158,10 +184,10 @@ fun SettingsPanel(
         Page.Main -> "main:walls"
         Page.Walls -> "wall:${settings.wallpaper.name}"
         Page.Colors -> "color:${settings.accent.name}"
-        Page.Shelves -> "home:clock"
+        Page.Shelves -> "home:favs"
         Page.Hidden -> apps.firstOrNull { it.pkg in settings.hidden }?.let { "hidden:${it.pkg}" }
         Page.Startup -> apps.firstOrNull { it.pkg == settings.autostart }?.let { "startup:${it.pkg}" } ?: "startup:none"
-        Page.Comfort -> "comfort:glass"
+        Page.Comfort -> "comfort:effects"
         Page.System -> "sys:net"
         Page.About -> "about:update"
         Page.Rows -> settings.rows.firstOrNull()?.let { "rows:${it.id}" } ?: "rows:new"
@@ -261,6 +287,8 @@ fun SettingsPanel(
                         .graphicsLayer {
                             val t = pageIn.value
                             alpha = t
+                            // Альфа на каждую операцию, без буфера под всю страницу при каждом переходе.
+                            compositingStrategy = CompositingStrategy.ModulateAlpha
                             translationX = (1f - t) * 24.dp.toPx() * direction
                         }
                         .verticalScroll(rememberScrollState()),
@@ -420,7 +448,7 @@ private fun MainPage(
     PanelRow(env, "main:startup", "При включении", value = startupTitle, chevron = true) {
         onPush(Page.Startup, "main:startup")
     }
-    PanelRow(env, "main:comfort", "Прозрачность и анимации", chevron = true) {
+    PanelRow(env, "main:comfort", "Плавность и эффекты", chevron = true) {
         onPush(Page.Comfort, "main:comfort")
     }
     PanelRow(env, "main:system", "Настройки Android", chevron = true) {
@@ -522,6 +550,29 @@ private fun ShelvesPage(
     hiddenCount: Int,
     onPush: (Page, String) -> Unit,
 ) {
+    PanelRow(env, "home:favs", "Ряд «Избранное»", toggle = settings.showFavorites) {
+        settings.updateShowFavorites(!settings.showFavorites)
+    }
+    PanelRow(
+        env, "home:all", "Ряд «Все приложения»",
+        description = if (settings.showAllApps) "Длинный ряд внизу" else "Скрыт: все приложения по\u00A0кнопке с\u00A0сеткой в\u00A0шапке",
+        toggle = settings.showAllApps,
+    ) {
+        settings.updateShowAllApps(!settings.showAllApps)
+    }
+    PanelRow(env, "home:titles", "Названия рядов", toggle = settings.rowTitles) {
+        settings.updateRowTitles(!settings.rowTitles)
+    }
+    PanelRow(
+        env, "home:add", "Плитка «+» в\u00A0рядах",
+        description = "Быстро добавить приложения в\u00A0ряд",
+        toggle = settings.addTiles,
+    ) {
+        settings.updateAddTiles(!settings.addTiles)
+    }
+    PanelRow(env, "home:wifi", "Значок сети в\u00A0шапке", toggle = settings.showWifi) {
+        settings.updateShowWifi(!settings.showWifi)
+    }
     PanelRow(
         env, "home:clock", "Формат времени",
         value = settings.clock.title,
@@ -655,6 +706,18 @@ private fun SystemPage(env: RowEnv, net: Net, onOpen: (SystemScreen) -> Unit) {
 
 @Composable
 private fun ComfortPage(env: RowEnv, settings: LauncherSettings) {
+    val look = LocalLook.current
+    PanelRow(
+        env, "comfort:effects", "Эффекты",
+        value = when (settings.effects) {
+            Effects.Auto -> if (look.lite) "авто: лёгкие" else "авто: полные"
+            else -> settings.effects.title
+        },
+        description = "Лёгкие: без теней и\u00A0плавной смены обоев, для слабых стиков",
+        onStep = { settings.updateEffects(settings.effects.step(it)) },
+    ) {
+        settings.updateEffects(settings.effects.step(1))
+    }
     PanelRow(
         env, "comfort:glass", "Уменьшить прозрачность",
         description = "Панели станут сплошными",
@@ -1092,44 +1155,100 @@ private fun UpdatePage(
     onCheck: () -> Unit,
     onInstall: () -> Unit,
 ) {
+    val look = LocalLook.current
     val state = updater.state
-    val line = when (state) {
-        UpdateState.Idle -> "Ещё не проверяли"
-        UpdateState.Checking -> "Проверяю GitHub"
-        is UpdateState.Latest -> "Это последняя версия"
-        is UpdateState.Available -> "Доступна версия ${state.version}"
-        is UpdateState.Downloading -> "Скачиваю ${state.version}: ${state.percent}\u00A0%"
-        is UpdateState.Installing -> "Открываю установщик"
-        is UpdateState.Failed -> state.message
-    }
-    Column(Modifier.padding(start = Space.l, end = Space.l, bottom = Space.m)) {
-        BasicText("Установлена ${updater.installed}", style = Typo.body)
-        Spacer(Modifier.height(Space.xs))
-        BasicText(line, style = Typo.smallSecondary)
-        if (state is UpdateState.Available && state.notes.isNotEmpty()) {
-            BasicText(state.notes, style = Typo.smallSecondary, maxLines = 3, overflow = TextOverflow.Ellipsis)
-        }
-        val installMessage = InstallStatus.message
-        if (installMessage != null) BasicText(installMessage, style = Typo.smallSecondary)
-    }
-    // Строка установки не пропадает во время скачивания, чтобы фокус не улетел в пустоту.
     val target = when (state) {
         is UpdateState.Available -> state.version
         is UpdateState.Downloading -> state.version
         is UpdateState.Installing -> state.version
         else -> null
     }
+    val line = when (state) {
+        UpdateState.Idle -> "Ещё не\u00A0проверяли"
+        UpdateState.Checking -> "Проверяю GitHub"
+        is UpdateState.Latest -> "Это последняя версия"
+        is UpdateState.Available -> "Готова к\u00A0установке"
+        is UpdateState.Downloading -> "Скачиваю: ${state.percent}\u00A0%"
+        is UpdateState.Installing -> "Открываю установщик"
+        is UpdateState.Failed -> state.message
+    }
+    val notes = (state as? UpdateState.Available)?.notes.orEmpty()
+        .lines().map { it.trim() }.filter { it.isNotEmpty() }.take(5)
+    val cardShape = RoundedCornerShape(Radius.row)
+
+    // Карточка версии: было и станет крупно, под ними строка состояния и полоса загрузки.
+    Column(
+        Modifier
+            .padding(start = Space.s, end = Space.s, bottom = Space.m)
+            .fillMaxWidth()
+            .clip(cardShape)
+            .background(Palette.tile.copy(alpha = 0.55f))
+            .border(1.dp, Palette.hairline, cardShape)
+            .padding(horizontal = Space.l, vertical = Space.m),
+    ) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            Column {
+                BasicText("Установлена", style = Typo.smallSecondary)
+                BasicText(updater.installed, style = Typo.clock)
+            }
+            if (target != null) {
+                BasicText(
+                    "\u2192",
+                    style = Typo.clock.copy(color = Palette.textSecondary),
+                    modifier = Modifier.padding(horizontal = Space.l),
+                )
+                Column {
+                    BasicText("Новая", style = Typo.smallSecondary.copy(color = look.accent))
+                    BasicText(target, style = Typo.clock.copy(color = look.accent))
+                }
+            }
+        }
+        Spacer(Modifier.height(Space.s))
+        BasicText(line, style = Typo.smallSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        val busy = state is UpdateState.Checking || state is UpdateState.Downloading || state is UpdateState.Installing
+        if (busy) {
+            Spacer(Modifier.height(Space.m))
+            UpdateBar(fraction = (state as? UpdateState.Downloading)?.percent?.div(100f))
+        }
+        if (notes.isNotEmpty()) {
+            Spacer(Modifier.height(Space.m))
+            BasicText("Что нового", style = Typo.small.copy(color = Palette.text))
+            notes.forEach { note ->
+                Row(Modifier.padding(top = Space.xs), verticalAlignment = Alignment.Top) {
+                    Box(
+                        Modifier
+                            .padding(top = 7.dp, end = Space.s)
+                            .size(5.dp)
+                            .background(look.accent, CircleShape),
+                    )
+                    BasicText(note, style = Typo.smallSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+        val installMessage = InstallStatus.message
+        if (installMessage != null) {
+            Spacer(Modifier.height(Space.s))
+            BasicText(installMessage, style = Typo.smallSecondary.copy(color = Palette.danger))
+        }
+    }
+    // Строка установки не пропадает во время скачивания, чтобы фокус не улетел в пустоту.
     if (target != null) {
         PanelRow(
-            env, "update:install", "Скачать и установить $target",
+            env, "update:install",
+            when (state) {
+                is UpdateState.Downloading -> "Скачиваю $target"
+                is UpdateState.Installing -> "Устанавливаю $target"
+                else -> "Скачать и\u00A0установить $target"
+            },
             value = (state as? UpdateState.Downloading)?.let { "${it.percent}\u00A0%" },
         ) {
             if (!updater.busy) onInstall()
         }
     }
     PanelRow(
-        env, "update:check", "Проверить сейчас",
-        value = if (state == UpdateState.Checking) "проверяю" else null,
+        env, "update:check",
+        if (state is UpdateState.Failed) "Попробовать ещё раз" else "Проверить сейчас",
+        value = if (state == UpdateState.Checking) "проверяю" else checkedAgo(updater.checkedAt),
     ) {
         if (!updater.busy) onCheck()
     }
@@ -1141,4 +1260,53 @@ private fun UpdatePage(
         settings.updateAutoUpdate(!settings.autoUpdate)
     }
     PanelHint("Новые версии берутся из\u00A0релизов github.com/$UPDATE_REPO")
+}
+
+/**
+ * Полоса загрузки: проценты едут плавно, пока ждём ответа, бежит короткий отрезок.
+ * Всё читается при отрисовке: проценты не пересобирают страницу.
+ */
+@Composable
+private fun UpdateBar(fraction: Float?) {
+    val look = LocalLook.current
+    val shown = animateFloatAsState(fraction ?: 0f, motion(280), label = "updateBar")
+    val sweep = if (fraction == null && !look.reduceMotion) {
+        rememberInfiniteTransition(label = "updateSweep").animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(1_100, easing = LinearEasing), RepeatMode.Restart),
+            label = "updateSweepT",
+        )
+    } else {
+        null
+    }
+    val accent = look.accent
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(6.dp)
+            .clip(CircleShape)
+            .background(Palette.hairline)
+            .drawBehind {
+                val r = CornerRadius(size.height / 2f)
+                if (fraction != null) {
+                    drawRoundRect(accent, size = Size(size.width * shown.value.coerceIn(0f, 1f), size.height), cornerRadius = r)
+                } else {
+                    val w = size.width * 0.3f
+                    val x = (sweep?.value ?: 0.35f) * (size.width + w) - w
+                    drawRoundRect(accent, topLeft = Offset(x, 0f), size = Size(w, size.height), cornerRadius = r)
+                }
+            },
+    )
+}
+
+private fun checkedAgo(at: Long): String? {
+    if (at <= 0L) return null
+    val minutes = (System.currentTimeMillis() - at) / 60_000L
+    return when {
+        minutes < 1 -> "только что"
+        minutes < 60 -> "$minutes\u00A0мин назад"
+        minutes < 24 * 60 -> "${minutes / 60}\u00A0ч назад"
+        else -> "${minutes / (24 * 60)}\u00A0дн назад"
+    }
 }

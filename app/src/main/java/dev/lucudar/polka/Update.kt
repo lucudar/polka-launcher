@@ -52,6 +52,10 @@ class Updater(private val context: Context) {
     val busy: Boolean
         get() = state is UpdateState.Checking || state is UpdateState.Downloading || state is UpdateState.Installing
 
+    /** Когда последний раз ходили на GitHub: для подписи «5 мин назад». */
+    val checkedAt: Long
+        get() = prefs.getLong(K_CHECKED, 0L)
+
     fun due(): Boolean = System.currentTimeMillis() - prefs.getLong(K_CHECKED, 0L) > CHECK_EVERY_MS
 
     suspend fun check() {
@@ -128,7 +132,7 @@ class Updater(private val context: Context) {
             Release(
                 version = json.optString("tag_name").removePrefix("v"),
                 apkUrl = apk,
-                notes = json.optString("body").lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.take(3).joinToString("\n"),
+                notes = releaseNotes(json.optString("body")),
             )
         } finally {
             connection.disconnect()
@@ -193,6 +197,19 @@ class Updater(private val context: Context) {
     private companion object {
         const val K_CHECKED = "checked_at"
         const val CHECK_EVERY_MS = 12 * 3_600_000L
+    }
+}
+
+/**
+ * Тело релиза в короткий список: пункты «- **Заголовок.** текст» без markdown.
+ * Если пунктов нет (старые релизы), первые строки как есть.
+ */
+fun releaseNotes(body: String): String {
+    val lines = body.lineSequence().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }.toList()
+    val items = lines.filter { it.startsWith("- ") || it.startsWith("* ") }
+    val picked = if (items.isNotEmpty()) items else lines.take(3)
+    return picked.take(6).joinToString("\n") { line ->
+        line.removePrefix("- ").removePrefix("* ").replace("**", "").replace("`", "").trim()
     }
 }
 

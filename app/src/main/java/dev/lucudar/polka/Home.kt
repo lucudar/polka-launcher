@@ -66,6 +66,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.asImageBitmap
@@ -102,6 +103,16 @@ import android.view.KeyEvent as NativeKeyEvent
 
 private const val SETTINGS_KEY = "settings"
 private const val NET_KEY = "net"
+private const val UPDATE_KEY = "update"
+private const val APPS_KEY = "apps"
+
+/** Коды стрелок: их автоповтор при зажатой кнопке прореживаем, см. HomeScreen. */
+private val DPAD_CODES = intArrayOf(
+    NativeKeyEvent.KEYCODE_DPAD_LEFT,
+    NativeKeyEvent.KEYCODE_DPAD_RIGHT,
+    NativeKeyEvent.KEYCODE_DPAD_UP,
+    NativeKeyEvent.KEYCODE_DPAD_DOWN,
+)
 
 /** Хвост ключа для плитки «+» в конце ряда: fav:+ или row:id:+. */
 private const val ADD = "+"
@@ -122,9 +133,6 @@ private fun favoriteApps(visible: List<AppEntry>, favorites: List<String>): List
     val byPkg = visible.associateBy { it.pkg }
     return favorites.mapNotNull { byPkg[it] }
 }
-
-private fun firstKey(visible: List<AppEntry>, favs: List<AppEntry>): String? =
-    favs.firstOrNull()?.let { "fav:${it.pkg}" } ?: visible.firstOrNull()?.let { "all:${it.pkg}" }
 
 @Composable
 fun HomeScreen(resumeTick: Int, homeTick: Int) {
@@ -159,6 +167,10 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
     var contentH by remember { mutableIntStateOf(0) }
     // Быстрое добавление: префикс ряда, для которого открыта сетка (fav или row:id).
     var pickerFor by remember { mutableStateOf<String?>(null) }
+    // «Все приложения» сеткой, когда ряд с ними скрыт в настройках.
+    var drawerOpen by remember { mutableStateOf(false) }
+    // Панель настроек открыта из капсулы «Обновить»: сразу на странице обновления.
+    var panelUpdate by remember { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
     var restoreFocus by remember { mutableStateOf<String?>(null) }
     var lastFocus by remember { mutableStateOf<String?>(null) }
@@ -175,7 +187,13 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
     val solid = settings.solidGlass
     val calm = settings.reduceMotion
     val wallDim = settings.brightness.dim
-    val look = remember(accent, wp, solid, calm, wallDim) {
+    val weak = remember { context.isWeakDevice() }
+    val lite = when (settings.effects) {
+        Effects.Auto -> weak
+        Effects.Full -> false
+        Effects.Lite -> true
+    }
+    val look = remember(accent, wp, solid, calm, wallDim, lite) {
         Look(
             accent = accent.color,
             onAccent = accent.on,
@@ -185,6 +203,7 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
             solidTone = wp.solidTone,
             reduceMotion = calm,
             wallDim = wallDim,
+            lite = lite,
         )
     }
 
@@ -203,7 +222,7 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
             customRows.map { row -> row to row.apps.mapNotNull { byPkg[it] } }
         }
     }
-    val interactive = menu == null && !settingsOpen && pickerFor == null
+    val interactive = menu == null && !settingsOpen && pickerFor == null && !drawerOpen
 
     fun listFor(prefix: String): List<AppEntry> = when {
         prefix == "fav" -> favList
@@ -212,11 +231,33 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
     }
 
     fun keyAlive(key: String): Boolean {
-        if (key == SETTINGS_KEY || key == NET_KEY) return true
+        if (key == SETTINGS_KEY) return true
+        if (key == NET_KEY) return settings.showWifi
+        if (key == UPDATE_KEY) return updater.available != null
+        if (key == APPS_KEY) return !settings.showAllApps
         val prefix = key.substringBeforeLast(':')
         val tail = key.substringAfterLast(':')
         if (tail == ADD) return prefix == "fav" || rowApps.any { "row:${it.first.id}" == prefix }
         return listFor(prefix).any { it.pkg == tail }
+    }
+
+    /**
+     * Куда ставить фокус при старте и по Home: первое избранное, первый непустой свой ряд,
+     * первое из всех приложений. Если на главном только пустые ряды, то их «+».
+     */
+    fun entryKey(shown: List<AppEntry>): String {
+        val shownPkgs = shown.mapTo(HashSet()) { it.pkg }
+        if (settings.showFavorites) {
+            favoriteApps(shown, favorites).firstOrNull()?.let { return "fav:${it.pkg}" }
+        }
+        settings.rows.firstNotNullOfOrNull { row -> row.apps.firstOrNull { it in shownPkgs }?.let { "row:${row.id}:$it" } }
+            ?.let { return it }
+        if (settings.showAllApps) shown.firstOrNull()?.let { return "all:${it.pkg}" }
+        if (settings.addTiles) {
+            if (settings.showFavorites) return "fav:$ADD"
+            settings.rows.firstOrNull()?.let { return "row:${it.id}:$ADD" }
+        }
+        return if (settings.showAllApps) SETTINGS_KEY else APPS_KEY
     }
 
     /** Ряд получил фокус: верх ряда к верху области, но не дальше конца списка. */
@@ -252,11 +293,11 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         val shownPkgs = shown.mapTo(HashSet()) { it.pkg }
         val focusGone = when (val f = lastFocus) {
             null -> true
-            SETTINGS_KEY, NET_KEY -> false
+            SETTINGS_KEY, NET_KEY, UPDATE_KEY, APPS_KEY -> !keyAlive(f)
             else -> f.substringAfterLast(':') != ADD && f.substringAfterLast(':') !in shownPkgs
         }
-        if (menu == null && !settingsOpen && pickerFor == null && (firstLoad || focusGone)) {
-            registry.requestWithRetry(firstKey(shown, favoriteApps(shown, favorites)))
+        if (menu == null && !settingsOpen && pickerFor == null && !drawerOpen && (firstLoad || focusGone)) {
+            registry.requestWithRetry(entryKey(shown))
         }
     }
 
@@ -266,6 +307,7 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         menu = null
         settingsOpen = false
         pickerFor = null
+        drawerOpen = false
         moving = null
         val fresh = stats.snapshot()
         counts = fresh
@@ -275,7 +317,7 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         shift.snapTo(0f)
         val loaded = apps ?: return@LaunchedEffect
         val shown = arrange(loaded, settings.hidden, settings.sort, fresh)
-        registry.requestWithRetry(firstKey(shown, favoriteApps(shown, favorites)))
+        registry.requestWithRetry(entryKey(shown))
     }
 
     // Ряд удалили или он стал короче: не оставлять пустоту внизу.
@@ -433,17 +475,44 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         LocalLook provides look,
         LocalBringIntoViewSpec provides edgeSpec,
     ) {
-        Box(Modifier.fillMaxSize().onSizeChanged { backdrop.rootSize = it }) {
+        // Зажатая стрелка шлёт повторы ~20 раз в секунду. Каждый шаг это прокрутка и новые плитки:
+        // на A35 они копились, и ряд «подвисал». Повторы чаще шага отбрасываем, первое нажатие никогда.
+        val repeatGap = if (lite) 110L else 75L
+        val lastRepeat = remember { LongArray(1) }
+        Box(
+            Modifier
+                .fillMaxSize()
+                .onSizeChanged { backdrop.rootSize = it }
+                .onPreviewKeyEvent { event ->
+                    val native = event.nativeKeyEvent
+                    if (native.action != NativeKeyEvent.ACTION_DOWN || native.repeatCount == 0 || native.keyCode !in DPAD_CODES) {
+                        return@onPreviewKeyEvent false
+                    }
+                    if (native.eventTime - lastRepeat[0] < repeatGap) return@onPreviewKeyEvent true
+                    lastRepeat[0] = native.eventTime
+                    false
+                },
+        ) {
             // Обои запечены вместе со скримом и затемнением в одну картинку: на S905Y4 это один
             // полноэкранный проход за кадр вместо трёх. Пока печётся, видна размытая копия.
             val baked = rememberBakedWallpaper(wp, wallDim)
-            Crossfade(targetState = baked, animationSpec = motion(360), label = "wallpaper") { picture ->
+            if (lite) {
+                // Плавная смена обоев держит два полноэкранных слоя и буфер под альфу: в лёгком режиме сразу.
                 Image(
-                    bitmap = picture ?: blurred,
+                    bitmap = baked ?: blurred,
                     contentDescription = null,
                     contentScale = ContentScale.FillBounds,
                     modifier = Modifier.fillMaxSize(),
                 )
+            } else {
+                Crossfade(targetState = baked, animationSpec = motion(360), label = "wallpaper") { picture ->
+                    Image(
+                        bitmap = picture ?: blurred,
+                        contentDescription = null,
+                        contentScale = ContentScale.FillBounds,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
 
             val tiles = settings.tileSize
@@ -455,14 +524,26 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                 val fixed = Layout.safeTop + Layout.barHeight + Layout.shelfChrome * 2 + Space.xl +
                     tiles.favH + tiles.allH + labelSpace * 2 + Layout.safeBottom
                 // Со своими рядами экран всё равно прокручивается: воздух под шапкой обычный.
-                val gap = if (customRows.isNotEmpty()) Space.xl else (maxHeight - fixed).coerceIn(Space.l, Space.xxxl)
+                val standard = customRows.isEmpty() && settings.showFavorites && settings.showAllApps && settings.rowTitles
+                val gap = if (!standard) Space.xl else (maxHeight - fixed).coerceIn(Space.l, Space.xxxl)
                 Column(Modifier.fillMaxSize().padding(top = Layout.safeTop)) {
                     TopBar(
                         clock = now.clockText(context, settings.clock),
                         date = if (settings.showDate) now.dateText() else null,
-                        net = net,
+                        net = if (settings.showWifi) net else null,
                         netRequester = registry[NET_KEY],
                         settingsRequester = registry[SETTINGS_KEY],
+                        updateRequester = registry[UPDATE_KEY],
+                        appsRequester = registry[APPS_KEY],
+                        updateVersion = updater.available?.version,
+                        showApps = !settings.showAllApps,
+                        onUpdate = {
+                            panelApp = null
+                            panelReturn = UPDATE_KEY
+                            panelUpdate = true
+                            settingsOpen = true
+                        },
+                        onApps = { drawerOpen = true },
                         interactive = interactive,
                         settingsActive = settingsOpen,
                         onFocused = { lastFocus = it },
@@ -470,10 +551,10 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                             if (!context.openSystemScreen(SystemScreen.Internet)) toast = "Не получилось открыть настройки сети"
                         },
                         weather = if (settings.weatherOn) weather.current(settings.city) else null,
-                        updateBadge = updater.available != null,
                         onSettings = {
                             panelApp = null
                             panelReturn = null
+                            panelUpdate = false
                             settingsOpen = true
                         },
                         modifier = Modifier
@@ -503,8 +584,16 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                         ShelfTitle("Все приложения")
                         SkeletonRow(tiles.allW, tiles.allH, 6, labelSpace)
                     } else {
+                        val titles = settings.rowTitles
+                        val adds = settings.addTiles
+                        // Зазор только между рядами: первый ряд встаёт прямо под шапку.
+                        var first = true
+                        if (settings.showFavorites) {
+                        if (!first) Spacer(Modifier.height(Space.xl))
+                        first = false
                         Shelf(
                             title = "Избранное",
+                            showTitle = titles,
                             apps = favList,
                             keyPrefix = "fav",
                             tileWidth = tiles.favW,
@@ -520,15 +609,23 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                             onMove = { pkg, delta -> moveTile("fav:$pkg", delta) },
                             onMoveDone = { moving = null },
                             onReveal = { reveal(it) },
-                            onAdd = { pickerFor = "fav" },
-                            empty = { ShelfHint("Нажми «+» или зажми OK на\u00A0любом приложении ниже") },
+                            onAdd = if (adds) ({ pickerFor = "fav" }) else null,
+                            empty = {
+                                ShelfHint(
+                                    if (adds) "Нажми «+» или зажми OK на\u00A0любом приложении" else "Зажми OK на\u00A0любом приложении",
+                                )
+                            },
                         )
+                        }
                         rowApps.forEach { (row, list) ->
-                            key(row.id) {
+                            // Без «+» пустому ряду нечего показать.
+                            if (list.isNotEmpty() || adds) key(row.id) {
                                 val prefix = "row:${row.id}"
-                                Spacer(Modifier.height(Space.xl))
+                                if (!first) Spacer(Modifier.height(Space.xl))
+                        first = false
                                 Shelf(
                                     title = row.title,
+                                    showTitle = titles,
                                     apps = list,
                                     keyPrefix = prefix,
                                     tileWidth = tiles.allW,
@@ -544,14 +641,17 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                                     onMove = { pkg, delta -> moveTile("$prefix:$pkg", delta) },
                                     onMoveDone = { moving = null },
                                     onReveal = { reveal(it) },
-                                    onAdd = { pickerFor = prefix },
+                                    onAdd = if (adds) ({ pickerFor = prefix }) else null,
                                     empty = { ShelfHint("Пустой ряд: нажми «+» и\u00A0выбери приложения") },
                                 )
                             }
                         }
-                        Spacer(Modifier.height(Space.xl))
+                        if (settings.showAllApps) {
+                        if (!first) Spacer(Modifier.height(Space.xl))
+                        first = false
                         Shelf(
                             title = "Все приложения",
+                            showTitle = titles,
                             apps = visible,
                             keyPrefix = "all",
                             tileWidth = tiles.allW,
@@ -567,6 +667,11 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                             onReveal = { reveal(it) },
                             empty = { ShelfHint("Все приложения скрыты. Вернуть их можно в\u00A0настройках, раздел «Главный экран»") },
                         )
+                        }
+                        if (first) {
+                            // Всё выключено: подсказка, где взять приложения.
+                            ShelfHint("Главный экран пуст. Приложения в\u00A0шапке, кнопка с\u00A0сеткой")
+                        }
                         Spacer(Modifier.height(Layout.safeBottom))
                     }
                     }
@@ -616,6 +721,19 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                 }
             }
 
+            if (drawerOpen) {
+                AppPicker(
+                    title = "Все приложения",
+                    apps = visible.orEmpty(),
+                    selected = null,
+                    onToggle = { pkg -> visible?.firstOrNull { it.pkg == pkg }?.let { openApp(it) } },
+                    onClosed = {
+                        drawerOpen = false
+                        restoreFocus = APPS_KEY
+                    },
+                )
+            }
+
             if (settingsOpen) {
                 SettingsPanel(
                     settings = settings,
@@ -624,6 +742,7 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                     weather = weather,
                     updater = updater,
                     startApp = panelApp,
+                    startUpdate = panelUpdate,
                     onRefreshWeather = { scope.launch { weather.refresh(settings.city, force = true) } },
                     onCheckUpdate = { scope.launch { updater.check() } },
                     onInstallUpdate = { scope.launch { updater.downloadAndInstall() } },
@@ -640,6 +759,7 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
                         restoreFocus = panelReturn?.takeIf { keyAlive(it) } ?: SETTINGS_KEY
                         panelApp = null
                         panelReturn = null
+                        panelUpdate = false
                     },
                 )
             }
@@ -651,16 +771,21 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
 private fun TopBar(
     clock: String,
     date: String?,
-    net: Net,
+    net: Net?,
     netRequester: FocusRequester,
     settingsRequester: FocusRequester,
+    updateRequester: FocusRequester,
+    appsRequester: FocusRequester,
     interactive: Boolean,
     settingsActive: Boolean,
     weather: WeatherNow?,
-    updateBadge: Boolean,
+    updateVersion: String?,
+    showApps: Boolean,
     onFocused: (String) -> Unit,
     onNetwork: () -> Unit,
     onSettings: () -> Unit,
+    onUpdate: () -> Unit,
+    onApps: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Капсула 64 dp, кнопки 48 dp с отступом 8: радиус кнопки 24 = 32 - 8.
@@ -697,25 +822,44 @@ private fun TopBar(
             }
             Spacer(Modifier.width(Space.l))
         }
-        // Значок сети тоже кнопка: Wi-Fi на стике настраивают чаще всего остального.
-        BarButton(netRequester, interactive, active = false, onFocused = { onFocused(NET_KEY) }, onClick = onNetwork) { tint ->
-            if (net == Net.Wifi) {
-                Image(
-                    WifiIcon,
-                    contentDescription = "Wi-Fi, настройки сети",
-                    colorFilter = ColorFilter.tint(tint),
-                    modifier = Modifier.size(24.dp),
-                )
-            } else {
-                BasicText(net.title, style = Typo.small.copy(color = tint))
+        // Есть новая версия: капсула прямо в шапке, OK открывает страницу обновления.
+        if (updateVersion != null) {
+            BarButton(updateRequester, interactive, active = true, onFocused = { onFocused(UPDATE_KEY) }, onClick = onUpdate) { tint ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Image(DownloadIcon, contentDescription = null, colorFilter = ColorFilter.tint(tint), modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(Space.s))
+                    BasicText("Обновить до\u00A0$updateVersion", style = Typo.small.copy(color = tint), maxLines = 1)
+                }
             }
+            Spacer(Modifier.width(Space.xs))
         }
-        Spacer(Modifier.width(Space.xs))
+        // Ряд «Все приложения» скрыт: они сеткой по кнопке в шапке.
+        if (showApps) {
+            BarButton(appsRequester, interactive, active = false, onFocused = { onFocused(APPS_KEY) }, onClick = onApps) { tint ->
+                Image(AppsIcon, contentDescription = "Все приложения", colorFilter = ColorFilter.tint(tint), modifier = Modifier.size(24.dp))
+            }
+            Spacer(Modifier.width(Space.xs))
+        }
+        // Значок сети тоже кнопка: Wi-Fi на стике настраивают чаще всего остального.
+        if (net != null) {
+            BarButton(netRequester, interactive, active = false, onFocused = { onFocused(NET_KEY) }, onClick = onNetwork) { tint ->
+                if (net == Net.Wifi) {
+                    Image(
+                        WifiIcon,
+                        contentDescription = "Wi-Fi, настройки сети",
+                        colorFilter = ColorFilter.tint(tint),
+                        modifier = Modifier.size(24.dp),
+                    )
+                } else {
+                    BasicText(net.title, style = Typo.small.copy(color = tint))
+                }
+            }
+            Spacer(Modifier.width(Space.xs))
+        }
         BarButton(
             settingsRequester,
             interactive,
             active = settingsActive,
-            badge = updateBadge,
             onFocused = { onFocused(SETTINGS_KEY) },
             onClick = onSettings,
         ) { tint ->
@@ -746,7 +890,7 @@ private fun BarButton(
     val look = LocalLook.current
     var focused by remember { mutableStateOf(false) }
     var pressed by remember { mutableStateOf(false) }
-    val fill by animateColorAsState(
+    val fill = animateColorAsState(
         when {
             focused -> look.accent
             active -> look.accent.copy(alpha = 0.22f)
@@ -774,7 +918,7 @@ private fun BarButton(
                 scaleY = scale
             }
             .clip(CircleShape)
-            .background(fill)
+            .drawBehind { drawRect(fill.value) }
             .focusRequester(requester)
             .onFocusChanged {
                 focused = it.isFocused
@@ -808,6 +952,7 @@ private fun ShelfTitle(text: String) {
 @Composable
 private fun Shelf(
     title: String,
+    showTitle: Boolean,
     apps: List<AppEntry>,
     keyPrefix: String,
     tileWidth: Dp,
@@ -837,7 +982,7 @@ private fun Shelf(
             .onPlaced { top[0] = it.positionInParent().y.roundToInt() }
             .onFocusChanged { if (it.hasFocus) onReveal(top[0]) },
     ) {
-        ShelfTitle(title)
+        if (showTitle) ShelfTitle(title)
         if (apps.isEmpty() && onAdd == null) {
             Box(
                 modifier = Modifier
@@ -952,7 +1097,8 @@ private fun AppTile(
                 .graphicsLayer {
                     scaleX = scale.value
                     scaleY = scale.value
-                    shadowElevation = glow.value * lift.toPx()
+                    // Лёгкий режим: без тени. Анимированная тень пересчитывается каждый кадр, а на Mali-G31 это дорого.
+                    shadowElevation = if (look.lite) 0f else glow.value * lift.toPx()
                     this.shape = shape
                     clip = true
                     ambientShadowColor = Palette.shadow
@@ -1053,7 +1199,10 @@ private fun TileLabel(text: String, width: Dp, labels: TileLabels, active: Boole
         modifier = Modifier
             .padding(top = Space.s)
             .width(width)
-            .graphicsLayer { alpha = labelAlpha.value },
+            .graphicsLayer {
+                alpha = labelAlpha.value
+                compositingStrategy = CompositingStrategy.ModulateAlpha
+            },
     )
 }
 
@@ -1096,7 +1245,7 @@ private fun AddTile(
                 .graphicsLayer {
                     scaleX = scale.value
                     scaleY = scale.value
-                    shadowElevation = glow.value * 18.dp.toPx()
+                    shadowElevation = if (look.lite) 0f else glow.value * 18.dp.toPx()
                     this.shape = shape
                     clip = true
                     ambientShadowColor = Palette.shadow

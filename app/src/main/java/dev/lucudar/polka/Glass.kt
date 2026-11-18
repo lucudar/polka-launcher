@@ -52,7 +52,10 @@ fun Modifier.glass(
     var origin by remember { mutableStateOf(Offset.Zero) }
     this
         .onGloballyPositioned { origin = it.positionInRoot() }
-        .shadow(elevation, shape, clip = false, ambientColor = Palette.shadow, spotColor = Palette.shadow)
+        // Тень панели на Mali-G31 стоит заметно: в лёгком режиме её нет, кромка и тон держат форму.
+        .then(
+            if (look.lite) Modifier else Modifier.shadow(elevation, shape, clip = false, ambientColor = Palette.shadow, spotColor = Palette.shadow),
+        )
         .clip(shape)
         .drawBehind {
             if (look.solidGlass) {

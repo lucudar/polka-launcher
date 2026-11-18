@@ -218,3 +218,15 @@ fun Context.safeStart(intent: Intent): Boolean = try {
 } catch (e: Exception) {
     false
 }
+
+/**
+ * Слабое железо для «Эффекты: авто». Mi TV Stick 4K: 2 ГБ и четыре Cortex-A35.
+ * Порог по памяти, потому что он честно отделяет стики от приставок с нормальным GPU.
+ */
+fun Context.isWeakDevice(): Boolean {
+    val am = getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager ?: return true
+    if (am.isLowRamDevice) return true
+    val info = android.app.ActivityManager.MemoryInfo()
+    am.getMemoryInfo(info)
+    return info.totalMem < 3L * 1024 * 1024 * 1024
+}

@@ -81,7 +81,8 @@ class AppRepository(context: Context) {
     }
 
     private fun Drawable.render(w: Int, h: Int): ImageBitmap? =
-        runCatching { toBitmap(w, h, Bitmap.Config.ARGB_8888).asImageBitmap() }.getOrNull()
+        // prepareToDraw: текстура уходит в GPU заранее, а не в кадре, где плитка впервые въехала в экран.
+        runCatching { toBitmap(w, h, Bitmap.Config.ARGB_8888).also { it.prepareToDraw() }.asImageBitmap() }.getOrNull()
 
     private companion object {
         const val BANNER_W = 320

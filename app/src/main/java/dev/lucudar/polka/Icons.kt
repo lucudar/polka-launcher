@@ -42,3 +42,15 @@ val ChevronLeftIcon: ImageVector by lazy {
 val ChevronIcon: ImageVector by lazy {
     materialIcon("Chevron", "M10,6L8.59,7.41 13.17,12l-4.58,4.59L10,18l6,-6z")
 }
+
+val AppsIcon: ImageVector by lazy {
+    materialIcon(
+        "Apps",
+        "M4,8h4V4H4v4zM10,20h4v-4h-4v4zM4,20h4v-4H4v4zM4,14h4v-4H4v4zM10,14h4v-4h-4v4z" +
+            "M16,4v4h4V4h-4zM10,8h4V4h-4v4zM16,14h4v-4h-4v4zM16,20h4v-4h-4v4z",
+    )
+}
+
+val DownloadIcon: ImageVector by lazy {
+    materialIcon("Download", "M19,9h-4V3H9v6H5l7,7 7,-7zM5,18v2h14v-2H5z")
+}
