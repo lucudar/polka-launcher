@@ -53,6 +53,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.runtime.State
+import androidx.compose.ui.draw.DrawResult
+import androidx.compose.ui.draw.CacheDrawScope
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
@@ -266,7 +272,7 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         val target = top.coerceIn(0, max).toFloat()
         if (shift.targetValue == target) return
         scope.launch {
-            if (calm) shift.snapTo(target) else shift.animateTo(target, spring(dampingRatio = 1f, stiffness = 380f))
+            if (calm) shift.snapTo(target) else shift.animateTo(target, spring(dampingRatio = 1f, stiffness = if (look.lite) 650f else 380f))
         }
     }
 
@@ -468,7 +474,7 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
 
     // Списки в панелях (настройки и прочее): своё правило вместо ТВ-пивота на 30 %, см. Scroll.kt.
     val density = LocalDensity.current
-    val edgeSpec = remember(density, calm) { EdgeSpec(with(density) { Layout.row.toPx() }, calm) }
+    val edgeSpec = remember(density, calm, look.lite) { EdgeSpec(with(density) { Layout.row.toPx() }, calm, look.lite) }
 
     CompositionLocalProvider(
         LocalBackdrop provides backdrop,
@@ -946,7 +952,8 @@ private fun BarButton(
 
 @Composable
 private fun ShelfTitle(text: String) {
-    BasicText(text, style = Typo.title, modifier = Modifier.padding(start = Layout.safeH))
+    val style = if (LocalLook.current.lite) Typo.titleFlat else Typo.title
+    BasicText(text, style = style, modifier = Modifier.padding(start = Layout.safeH))
 }
 
 @Composable
@@ -975,7 +982,8 @@ private fun Shelf(
     val calm = LocalLook.current.reduceMotion
     // Верх ряда внутри списка: не state, нужен только в момент, когда ряд получает фокус.
     val top = remember { IntArray(1) }
-    val spec = remember(density, calm) { PinnedSpec(with(density) { Layout.safeH.toPx() }, calm) }
+    val lite = LocalLook.current.lite
+    val spec = remember(density, calm, lite) { PinnedSpec(with(density) { Layout.safeH.toPx() }, calm, lite) }
     val slot = tileHeight + if (labels == TileLabels.Off) 0.dp else Layout.labelSpace
     Column(
         Modifier
@@ -1099,22 +1107,13 @@ private fun AppTile(
                     scaleY = scale.value
                     // Лёгкий режим: без тени. Анимированная тень пересчитывается каждый кадр, а на Mali-G31 это дорого.
                     shadowElevation = if (look.lite) 0f else glow.value * lift.toPx()
+                    // Форма только для тени. Обрезки слоя нет: скруглённая обрезка картинки на Skia GL
+                    // это клип-маска на каждый кадр, а скруглённый прямоугольник с текстурой рисуется одной операцией.
                     this.shape = shape
-                    clip = true
                     ambientShadowColor = Palette.shadow
                     spotShadowColor = Palette.shadow
                 }
-                .background(Palette.tile)
-                .drawWithCache {
-                    val outline = shape.createOutline(size, layoutDirection, this)
-                    // Половина обводки уходит под обрезку слоя: видно ровно 2 dp внутри плитки.
-                    val ring = Stroke(4.dp.toPx())
-                    onDrawWithContent {
-                        drawContent()
-                        val a = glow.value
-                        if (a > 0.01f) drawOutline(outline, accent.copy(alpha = a), style = ring)
-                    }
-                }
+                .drawWithCache { tileFace(app.banner, glow, accent) }
                 .focusRequester(focusRequester)
                 .onFocusChanged {
                     focused = it.isFocused
@@ -1152,12 +1151,8 @@ private fun AppTile(
             val banner = app.banner
             val icon = app.icon
             when {
-                banner != null -> Image(
-                    bitmap = banner,
-                    contentDescription = app.label,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                )
+                // Баннер рисует tileFace прямо в фоне плитки.
+                banner != null -> Unit
                 // Подписи включены: у приложения с телефона только иконка, имя будет под плиткой, как у всех.
                 labels != TileLabels.Off && icon != null -> Image(
                     bitmap = icon,
@@ -1193,7 +1188,7 @@ private fun TileLabel(text: String, width: Dp, labels: TileLabels, active: Boole
     val labelAlpha = animateFloatAsState(if (shown) 1f else 0f, motion(160), label = "tileLabel")
     BasicText(
         text,
-        style = Typo.tileLabel,
+        style = if (LocalLook.current.lite) Typo.tileLabelFlat else Typo.tileLabel,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier
@@ -1247,29 +1242,27 @@ private fun AddTile(
                     scaleY = scale.value
                     shadowElevation = if (look.lite) 0f else glow.value * 18.dp.toPx()
                     this.shape = shape
-                    clip = true
                     ambientShadowColor = Palette.shadow
                     spotShadowColor = Palette.shadow
                 }
                 .drawWithCache {
-                    val inset = 1.5.dp.toPx()
-                    val dash = Stroke(
-                        width = 1.5.dp.toPx(),
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(8.dp.toPx(), 6.dp.toPx())),
-                    )
-                    val corner = CornerRadius(Radius.tile.toPx() - inset)
-                    val inner = Size(size.width - inset * 2, size.height - inset * 2)
+                    // Сплошная кромка вместо пунктира: пунктир Skia строит путём на процессоре каждый кадр.
+                    val edge = 1.5.dp.toPx()
+                    val corner = CornerRadius(Radius.tile.toPx())
+                    val inner = Size(size.width - edge, size.height - edge)
+                    val innerCorner = CornerRadius(Radius.tile.toPx() - edge / 2f)
+                    val stroke = Stroke(edge)
                     onDrawBehind {
                         val g = glow.value
-                        drawRect(Palette.tile.copy(alpha = 0.45f))
-                        if (g > 0.01f) drawRect(accent.copy(alpha = g))
+                        drawRoundRect(Palette.tile.copy(alpha = 0.45f), cornerRadius = corner)
+                        if (g > 0.01f) drawRoundRect(accent.copy(alpha = g), cornerRadius = corner)
                         if (g < 0.99f) {
                             drawRoundRect(
-                                color = Palette.textSecondary.copy(alpha = 0.6f * (1f - g)),
-                                topLeft = Offset(inset, inset),
+                                color = Palette.textSecondary.copy(alpha = 0.5f * (1f - g)),
+                                topLeft = Offset(edge / 2f, edge / 2f),
                                 size = inner,
-                                cornerRadius = corner,
-                                style = dash,
+                                cornerRadius = innerCorner,
+                                style = stroke,
                             )
                         }
                     }
@@ -1375,5 +1368,47 @@ private fun GlassPill(text: String, modifier: Modifier = Modifier) {
             .padding(horizontal = Space.xl, vertical = Space.m),
     ) {
         BasicText(text, style = Typo.body)
+    }
+}
+
+/**
+ * Лицо плитки за один-два вызова отрисовки: скруглённый прямоугольник с баннером через BitmapShader
+ * (масштаб как ContentScale.Crop) или сплошной фон, сверху содержимое и обводка фокуса внутри кромки.
+ */
+private fun CacheDrawScope.tileFace(banner: ImageBitmap?, glow: State<Float>, accent: Color): DrawResult {
+    val r = Radius.tile.toPx()
+    val ringW = 2.dp.toPx()
+    val ring = Stroke(ringW)
+    val ringSize = Size(size.width - ringW, size.height - ringW)
+    val ringCorner = CornerRadius(r - ringW / 2f)
+    val paint = banner?.let { image ->
+        val bmp = image.asAndroidBitmap()
+        val s = maxOf(size.width / bmp.width, size.height / bmp.height)
+        val matrix = android.graphics.Matrix().apply {
+            setScale(s, s)
+            postTranslate((size.width - bmp.width * s) / 2f, (size.height - bmp.height * s) / 2f)
+        }
+        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG or android.graphics.Paint.FILTER_BITMAP_FLAG).apply {
+            shader = android.graphics.BitmapShader(bmp, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP)
+                .apply { setLocalMatrix(matrix) }
+        }
+    }
+    return onDrawWithContent {
+        if (paint != null) {
+            drawIntoCanvas { it.nativeCanvas.drawRoundRect(0f, 0f, size.width, size.height, r, r, paint) }
+        } else {
+            drawRoundRect(Palette.tile, cornerRadius = CornerRadius(r))
+        }
+        drawContent()
+        val a = glow.value
+        if (a > 0.01f) {
+            drawRoundRect(
+                accent.copy(alpha = a),
+                topLeft = Offset(ringW / 2f, ringW / 2f),
+                size = ringSize,
+                cornerRadius = ringCorner,
+                style = ring,
+            )
+        }
     }
 }

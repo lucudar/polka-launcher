@@ -120,7 +120,12 @@ fun <T> motion(durationMillis: Int): FiniteAnimationSpec<T> =
 /** Масштаб плитки в фокусе: пружина с лёгким перелётом, плитка «встаёт», а не плывёт. */
 @Composable
 fun pop(): FiniteAnimationSpec<Float> =
-    if (LocalLook.current.reduceMotion) snap() else spring(dampingRatio = 0.68f, stiffness = 560f)
+    when {
+        LocalLook.current.reduceMotion -> snap()
+        // Лёгкий режим: жёстче и почти без перелёта, анимация укладывается в меньшее число кадров.
+        LocalLook.current.lite -> spring(dampingRatio = 0.82f, stiffness = 900f)
+        else -> spring(dampingRatio = 0.68f, stiffness = 560f)
+    }
 
 /** Размер панели: критическое затухание, без дрожи в конце. */
 @Composable
@@ -172,4 +177,12 @@ object Typo {
         fontFamily = Onest, color = Palette.text, fontSize = 15.sp, lineHeight = 20.sp,
         fontWeight = FontWeight.Medium, shadow = legibility, textAlign = TextAlign.Center,
     )
+
+    /*
+     * Те же стили без тени для лёгкого режима. Размытая тень текста на Skia GL растеризуется
+     * процессором в маску, а на стике это заметная доля «Slow issue draw commands».
+     * Подписи и так лежат на затемнённом скримом низу обоев.
+     */
+    val titleFlat = title.copy(shadow = null)
+    val tileLabelFlat = tileLabel.copy(shadow = null)
 }

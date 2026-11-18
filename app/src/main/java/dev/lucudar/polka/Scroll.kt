@@ -11,19 +11,23 @@ import androidx.compose.foundation.gestures.BringIntoViewSpec
  */
 
 /** Критическое затухание: доезжает быстро и без перелёта. «Без анимаций»: почти мгновенно. */
-fun scrollSpring(reduceMotion: Boolean): AnimationSpec<Float> =
-    if (reduceMotion) spring(dampingRatio = 1f, stiffness = 20_000f) else spring(dampingRatio = 1f, stiffness = 420f)
+fun scrollSpring(reduceMotion: Boolean, lite: Boolean = false): AnimationSpec<Float> = when {
+    reduceMotion -> spring(dampingRatio = 1f, stiffness = 20_000f)
+    // Лёгкий режим: ряд доезжает быстрее, тяжёлых кадров прокрутки меньше.
+    lite -> spring(dampingRatio = 1f, stiffness = 700f)
+    else -> spring(dampingRatio = 1f, stiffness = 420f)
+}
 
 /** Ряд плиток: фокус стоит в первом слоте, ряд едет под ним, как в Google TV. */
-class PinnedSpec(private val pivot: Float, reduceMotion: Boolean) : BringIntoViewSpec {
-    override val scrollAnimationSpec: AnimationSpec<Float> = scrollSpring(reduceMotion)
+class PinnedSpec(private val pivot: Float, reduceMotion: Boolean, lite: Boolean = false) : BringIntoViewSpec {
+    override val scrollAnimationSpec: AnimationSpec<Float> = scrollSpring(reduceMotion, lite)
 
     override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = offset - pivot
 }
 
 /** Списки в панелях и сетка выбора: едем, только когда пункт подходит к краю, с полем под соседа. */
-class EdgeSpec(private val margin: Float, reduceMotion: Boolean) : BringIntoViewSpec {
-    override val scrollAnimationSpec: AnimationSpec<Float> = scrollSpring(reduceMotion)
+class EdgeSpec(private val margin: Float, reduceMotion: Boolean, lite: Boolean = false) : BringIntoViewSpec {
+    override val scrollAnimationSpec: AnimationSpec<Float> = scrollSpring(reduceMotion, lite)
 
     override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
         val m = margin.coerceAtMost(((containerSize - size) / 2f).coerceAtLeast(0f))
