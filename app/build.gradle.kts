@@ -46,6 +46,8 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+        // BringIntoViewRequester в Compose 1.7 ещё помечен экспериментальным.
+        freeCompilerArgs += listOf("-opt-in=androidx.compose.foundation.ExperimentalFoundationApi")
     }
     buildFeatures {
         compose = true
