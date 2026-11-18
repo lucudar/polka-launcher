@@ -1,0 +1,257 @@
+package dev.lucudar.polka
+
+import android.content.Context
+import android.content.SharedPreferences
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+
+/**
+ * Обои: полная картинка 1920 x 1080, размытая копия 480 x 270 для стекла и превью для настроек.
+ * Скрим, плотность стекла и сплошной тон подобраны под каждую картинку замером контраста:
+ * заголовок над небом от 3,7:1, дата на стекле от 4,5:1 даже в самой светлой точке.
+ */
+enum class Wallpaper(
+    val title: String,
+    val full: Int,
+    val blur: Int,
+    val thumb: Int,
+    val scrimTop: Float,
+    val scrimBottom: Float,
+    val tint: Float,
+    val solidTone: Color,
+) {
+    Lake("Озеро", R.drawable.wp_lake, R.drawable.wp_lake_blur, R.drawable.wp_lake_thumb, 0.22f, 0.69f, 0.60f, Color(0xFF19232E)),
+    Dunes("Дюны", R.drawable.wp_dunes, R.drawable.wp_dunes_blur, R.drawable.wp_dunes_thumb, 0.24f, 0.69f, 0.62f, Color(0xFF212225)),
+    Ridges("Горы", R.drawable.wp_ridges, R.drawable.wp_ridges_blur, R.drawable.wp_ridges_thumb, 0.32f, 0.72f, 0.70f, Color(0xFF20262C)),
+    Aurora("Сияние", R.drawable.wp_aurora, R.drawable.wp_aurora_blur, R.drawable.wp_aurora_thumb, 0.18f, 0.66f, 0.60f, Color(0xFF142028)),
+}
+
+/** Цвет выделения. Все пять светлые, поэтому текст на них тёмный, тонированный тем же оттенком: от 8:1. */
+enum class Accent(val title: String, val color: Color, val on: Color) {
+    Amber("Янтарь", Color(0xFFF2A93B), Color(0xFF1A1206)),
+    Mint("Мята", Color(0xFF5ED3B1), Color(0xFF06201A)),
+    Ice("Лёд", Color(0xFF8CC8FF), Color(0xFF0A1A2B)),
+    Coral("Коралл", Color(0xFFFF8F7A), Color(0xFF2A0E08)),
+    Linen("Лён", Color(0xFFE8E1D2), Color(0xFF1C1A15)),
+}
+
+enum class ClockMode(val title: String) {
+    Auto("Как в системе"),
+    H24("24 часа"),
+    H12("12 часов"),
+}
+
+enum class SortMode(val title: String) {
+    Alpha("По алфавиту"),
+    Frequent("Сначала частые"),
+    Newest("Сначала новые"),
+}
+
+/** Размер плиток: избранное крупнее, все приложения мельче, пропорция баннера 16:9 сохраняется. */
+enum class TileSize(val title: String, val favW: Dp, val favH: Dp, val allW: Dp, val allH: Dp) {
+    Compact("Компактные", 160.dp, 90.dp, 128.dp, 72.dp),
+    Normal("Обычные", 184.dp, 104.dp, 144.dp, 81.dp),
+    Large("Крупные", 208.dp, 117.dp, 168.dp, 95.dp),
+}
+
+enum class TileLabels(val title: String) {
+    Off("Нет"),
+    Focused("В фокусе"),
+    Always("Всегда"),
+}
+
+/** Яркость обоев поверх подобранного скрима: вечером на большом экране 100 % бывает много. */
+enum class WallBrightness(val title: String, val dim: Float) {
+    Full("100\u00A0%", 0f),
+    Soft("75\u00A0%", 0.25f),
+    Low("50\u00A0%", 0.5f),
+}
+
+/** Шаг по кругу для настроек с несколькими значениями: OK и стрелки вправо/влево. */
+inline fun <reified E : Enum<E>> E.step(delta: Int): E {
+    val values = enumValues<E>()
+    return values[(ordinal + delta).mod(values.size)]
+}
+
+/**
+ * Настройки лаунчера. Каждое поле одновременно Compose-состояние и запись в SharedPreferences,
+ * поэтому выбор в панели сразу виден на экране и переживает перезапуск.
+ */
+@Stable
+class LauncherSettings(context: Context) {
+    private val prefs: SharedPreferences =
+        context.applicationContext.getSharedPreferences("polka", Context.MODE_PRIVATE)
+
+    var wallpaper by mutableStateOf(prefs.readEnum(K_WALLPAPER, Wallpaper.Lake))
+        private set
+    var accent by mutableStateOf(prefs.readEnum(K_ACCENT, Accent.Amber))
+        private set
+    var clock by mutableStateOf(prefs.readEnum(K_CLOCK, ClockMode.Auto))
+        private set
+    var sort by mutableStateOf(prefs.readEnum(K_SORT, SortMode.Alpha))
+        private set
+    var showDate by mutableStateOf(prefs.getBoolean(K_DATE, true))
+        private set
+    var solidGlass by mutableStateOf(prefs.getBoolean(K_SOLID, false))
+        private set
+    var reduceMotion by mutableStateOf(prefs.getBoolean(K_MOTION, false))
+        private set
+    var hidden by mutableStateOf(prefs.readSet(K_HIDDEN))
+        private set
+    var tileSize by mutableStateOf(prefs.readEnum(K_TILES, TileSize.Normal))
+        private set
+    var labels by mutableStateOf(prefs.readEnum(K_LABELS, TileLabels.Off))
+        private set
+    var brightness by mutableStateOf(prefs.readEnum(K_BRIGHTNESS, WallBrightness.Full))
+        private set
+
+    /** Пакет, который открывается сразу после включения стика, или null. */
+    var autostart by mutableStateOf<String?>(prefs.getString(K_AUTOSTART, null))
+        private set
+
+    /** Загрузка, на которой автозапуск уже сработал: перезапуск Полки в ту же загрузку его не повторит. */
+    val handledBoot: Int
+        get() = prefs.getInt(K_BOOT, -1)
+
+    fun updateWallpaper(value: Wallpaper) {
+        wallpaper = value
+        prefs.edit().putString(K_WALLPAPER, value.name).apply()
+    }
+
+    fun updateAccent(value: Accent) {
+        accent = value
+        prefs.edit().putString(K_ACCENT, value.name).apply()
+    }
+
+    fun updateClock(value: ClockMode) {
+        clock = value
+        prefs.edit().putString(K_CLOCK, value.name).apply()
+    }
+
+    fun updateSort(value: SortMode) {
+        sort = value
+        prefs.edit().putString(K_SORT, value.name).apply()
+    }
+
+    fun updateShowDate(value: Boolean) {
+        showDate = value
+        prefs.edit().putBoolean(K_DATE, value).apply()
+    }
+
+    fun updateSolidGlass(value: Boolean) {
+        solidGlass = value
+        prefs.edit().putBoolean(K_SOLID, value).apply()
+    }
+
+    fun updateReduceMotion(value: Boolean) {
+        reduceMotion = value
+        prefs.edit().putBoolean(K_MOTION, value).apply()
+    }
+
+    fun updateTileSize(value: TileSize) {
+        tileSize = value
+        prefs.edit().putString(K_TILES, value.name).apply()
+    }
+
+    fun updateLabels(value: TileLabels) {
+        labels = value
+        prefs.edit().putString(K_LABELS, value.name).apply()
+    }
+
+    fun updateBrightness(value: WallBrightness) {
+        brightness = value
+        prefs.edit().putString(K_BRIGHTNESS, value.name).apply()
+    }
+
+    /**
+     * Выбор в настройках сразу помечает текущую загрузку обработанной: иначе приложение
+     * открылось бы само при первом же перезапуске Полки, не дожидаясь следующего включения.
+     */
+    fun updateAutostart(pkg: String?, currentBoot: Int?) {
+        autostart = pkg
+        val editor = prefs.edit()
+        if (pkg == null) editor.remove(K_AUTOSTART) else editor.putString(K_AUTOSTART, pkg)
+        editor.apply()
+        if (currentBoot != null) markBootHandled(currentBoot)
+    }
+
+    fun markBootHandled(boot: Int) {
+        prefs.edit().putInt(K_BOOT, boot).apply()
+    }
+
+    fun hide(pkg: String) = updateHidden(hidden + pkg)
+
+    fun unhide(pkg: String) = updateHidden(hidden - pkg)
+
+    private fun updateHidden(value: Set<String>) {
+        hidden = value
+        prefs.edit().putString(K_HIDDEN, value.joinToString("\n")).apply()
+    }
+
+    /** Всё, кроме избранного: обои, цвет, часы, плитки, порядок, скрытые приложения, автозапуск. */
+    fun resetAll() {
+        prefs.edit()
+            .remove(K_WALLPAPER).remove(K_ACCENT).remove(K_CLOCK).remove(K_SORT)
+            .remove(K_DATE).remove(K_SOLID).remove(K_MOTION).remove(K_HIDDEN)
+            .remove(K_TILES).remove(K_LABELS).remove(K_BRIGHTNESS).remove(K_AUTOSTART)
+            .apply()
+        wallpaper = Wallpaper.Lake
+        accent = Accent.Amber
+        clock = ClockMode.Auto
+        sort = SortMode.Alpha
+        showDate = true
+        solidGlass = false
+        reduceMotion = false
+        hidden = emptySet()
+        tileSize = TileSize.Normal
+        labels = TileLabels.Off
+        brightness = WallBrightness.Full
+        autostart = null
+    }
+
+    private companion object {
+        const val K_WALLPAPER = "wallpaper"
+        const val K_ACCENT = "accent"
+        const val K_CLOCK = "clock"
+        const val K_SORT = "sort"
+        const val K_DATE = "show_date"
+        const val K_SOLID = "solid_glass"
+        const val K_MOTION = "reduce_motion"
+        const val K_HIDDEN = "hidden"
+        const val K_TILES = "tile_size"
+        const val K_LABELS = "tile_labels"
+        const val K_BRIGHTNESS = "wall_brightness"
+        const val K_AUTOSTART = "autostart"
+        const val K_BOOT = "autostart_boot"
+    }
+}
+
+/** Счётчик запусков для порядка «Сначала частые». Хранится только на стике, никуда не уходит. */
+class LaunchStats(context: Context) {
+    private val prefs = context.applicationContext.getSharedPreferences("polka_launches", Context.MODE_PRIVATE)
+
+    fun record(pkg: String) {
+        prefs.edit().putInt(pkg, prefs.getInt(pkg, 0) + 1).apply()
+    }
+
+    fun snapshot(): Map<String, Int> = buildMap<String, Int> {
+        prefs.all.forEach { (key, value) -> if (value is Int) put(key, value) }
+    }
+
+    fun clear() {
+        prefs.edit().clear().apply()
+    }
+}
+
+private inline fun <reified E : Enum<E>> SharedPreferences.readEnum(key: String, default: E): E {
+    val name = getString(key, null) ?: return default
+    return enumValues<E>().firstOrNull { it.name == name } ?: default
+}
+
+private fun SharedPreferences.readSet(key: String): Set<String> =
+    getString(key, null)?.split('\n')?.filterTo(LinkedHashSet()) { it.isNotBlank() } ?: emptySet()
