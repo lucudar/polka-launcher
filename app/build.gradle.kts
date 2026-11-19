@@ -12,8 +12,8 @@ android {
         applicationId = "dev.lucudar.polka"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.6.3"
+        versionCode = 10
+        versionName = "0.7.0"
     }
 
     // Ключ лежит в репозитории, чтобы обновления ставились поверх без удаления.
@@ -66,6 +66,8 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.core:core-ktx:1.15.0")
+    // Ряды главного экрана: View-версия на RecyclerView, как у лёгких ТВ-лаунчеров.
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
     // Ставит профиль горячего кода (свой и Compose) после установки: ART компилирует его заранее,
     // а не гоняет интерпретатор на A35. Без Play это единственный путь к быстрому первому запуску.
     implementation("androidx.profileinstaller:profileinstaller:1.3.1")

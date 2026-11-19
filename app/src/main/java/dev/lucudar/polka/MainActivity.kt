@@ -2,32 +2,36 @@ package dev.lucudar.polka
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.setValue
 
+/**
+ * Главный экран с 0.7 на обычных View (см. ViewHome.kt): на Mi TV Stick 4K это вдвое быстрее Compose.
+ * Compose остался для меню, сетки выбора и настроек поверх.
+ */
 class MainActivity : ComponentActivity() {
-    private var resumeTick by mutableIntStateOf(0)
-    private var homeTick by mutableIntStateOf(0)
+    private lateinit var home: HomeController
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { HomeScreen(resumeTick = resumeTick, homeTick = homeTick) }
-        // Обои непрозрачные и на весь экран: чёрный фон окна под ними был лишним полноэкранным проходом.
-        window.setBackgroundDrawable(null)
+        home = HomeController(this)
+        home.start()
     }
 
     /** Вернулись из приложения: пересобираем список (могли что-то поставить или удалить). */
     override fun onResume() {
         super.onResume()
-        resumeTick++
+        home.onResume()
     }
 
     /** Кнопка Home, когда мы уже на экране: в начало, фокус на первое избранное. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent.hasCategory(Intent.CATEGORY_HOME)) homeTick++
+        if (intent.hasCategory(Intent.CATEGORY_HOME)) home.onHome()
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (::home.isInitialized && home.throttle(event)) return true
+        return super.dispatchKeyEvent(event)
     }
 }
