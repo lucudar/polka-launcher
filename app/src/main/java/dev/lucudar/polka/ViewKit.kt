@@ -101,8 +101,11 @@ class PathIcon(pathData: String, private val sizePx: Int) : Drawable() {
     private val path = PathParser.createPathFromPathData(pathData)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
+    // Своё имя для JVM: Drawable уже держит setTint(int) под ColorStateList-тонировку.
     var tint: Int
+        @JvmName("getInk")
         get() = paint.color
+        @JvmName("setInk")
         set(value) {
             if (paint.color != value) {
                 paint.color = value
@@ -159,7 +162,9 @@ class GlassDrawable(private val context: Context) : Drawable() {
     var lite = false
 
     var tint: Int
+        @JvmName("getTone")
         get() = tintPaint.color
+        @JvmName("setTone")
         set(value) {
             tintPaint.color = value
             invalidateSelf()
