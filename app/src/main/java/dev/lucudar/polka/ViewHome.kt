@@ -163,7 +163,7 @@ class HomeController(private val activity: MainActivity) : ShelfHost {
     private var visible: List<AppEntry> = emptyList()
     private var favList: List<AppEntry> = emptyList()
     private var rowApps: List<Pair<AppRow, List<AppEntry>>> = emptyList()
-    private var bakedKey: Triple<Wallpaper, Float, Boolean>? = null
+    private var bakedKey: List<Any>? = null
     private var blurredFor: Wallpaper? = null
     private var blurred: Bitmap? = null
     private var bakeJob: Job? = null
