@@ -983,7 +983,11 @@ private fun Shelf(
     // Верх ряда внутри списка: не state, нужен только в момент, когда ряд получает фокус.
     val top = remember { IntArray(1) }
     val lite = LocalLook.current.lite
-    val spec = remember(density, calm, lite) { PinnedSpec(with(density) { Layout.safeH.toPx() }, calm, lite) }
+    // Полный режим: фокус в первом слоте, как в Google TV. Лёгкий: ряд стоит и листается страницами.
+    val spec = remember(density, calm, lite) {
+        val edge = with(density) { Layout.safeH.toPx() }
+        if (lite) PageSpec(edge, calm) else PinnedSpec(edge, calm)
+    }
     val slot = tileHeight + if (labels == TileLabels.Off) 0.dp else Layout.labelSpace
     Column(
         Modifier
