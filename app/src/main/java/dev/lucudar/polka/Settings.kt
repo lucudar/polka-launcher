@@ -161,6 +161,15 @@ class LauncherSettings(context: Context) {
     var effects by mutableStateOf(prefs.readEnum(K_EFFECTS, Effects.Auto))
         private set
 
+    /** Без обоев: однотонный фон. Видеочипу не нужно каждый кадр читать картинку на весь экран. */
+    var plainBackground by mutableStateOf(prefs.getBoolean(K_PLAIN, false))
+        private set
+
+    fun updatePlainBackground(value: Boolean) {
+        plainBackground = value
+        prefs.edit().putBoolean(K_PLAIN, value).apply()
+    }
+
     fun updateShowFavorites(value: Boolean) {
         showFavorites = value
         prefs.edit().putBoolean(K_SHOW_FAVS, value).apply()
@@ -334,8 +343,9 @@ class LauncherSettings(context: Context) {
             .remove(K_DATE).remove(K_SOLID).remove(K_MOTION).remove(K_HIDDEN)
             .remove(K_TILES).remove(K_LABELS).remove(K_BRIGHTNESS).remove(K_AUTOSTART)
             .remove(K_SHOW_FAVS).remove(K_SHOW_ALL).remove(K_ROW_TITLES).remove(K_ADD_TILES)
-            .remove(K_WIFI).remove(K_EFFECTS)
+            .remove(K_WIFI).remove(K_EFFECTS).remove(K_PLAIN)
             .apply()
+        plainBackground = false
         showFavorites = true
         showAllApps = true
         rowTitles = true
@@ -380,6 +390,7 @@ class LauncherSettings(context: Context) {
         const val K_ADD_TILES = "add_tiles"
         const val K_WIFI = "show_wifi"
         const val K_EFFECTS = "effects"
+        const val K_PLAIN = "plain_background"
     }
 }
 

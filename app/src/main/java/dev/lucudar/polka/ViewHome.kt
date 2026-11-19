@@ -93,6 +93,7 @@ private data class HomeModel(
     val lite: Boolean,
     val calm: Boolean,
     val wallpaper: Wallpaper,
+    val plain: Boolean,
     val dim: Float,
     val solid: Boolean,
     val clock: ClockMode,
@@ -341,6 +342,7 @@ class HomeController(private val activity: MainActivity) : ShelfHost {
         lite = lite,
         calm = settings.reduceMotion,
         wallpaper = settings.wallpaper,
+        plain = settings.plainBackground,
         dim = settings.brightness.dim,
         solid = settings.solidGlass,
         clock = settings.clock,
@@ -355,7 +357,7 @@ class HomeController(private val activity: MainActivity) : ShelfHost {
     private fun render(m: HomeModel) {
         val previous = model
         model = m
-        if (previous == null || previous.wallpaper != m.wallpaper || previous.dim != m.dim || previous.lite != m.lite) {
+        if (previous == null || previous.wallpaper != m.wallpaper || previous.dim != m.dim || previous.lite != m.lite || previous.plain != m.plain) {
             updateWallpaper(m)
         }
         if (previous?.clock != m.clock) tickClock()
@@ -365,6 +367,16 @@ class HomeController(private val activity: MainActivity) : ShelfHost {
 
     private fun updateWallpaper(m: HomeModel) {
         val key = Triple(m.wallpaper, m.dim, m.lite)
+        if (m.plain) {
+            // Без обоев: однотонный фон окна, только заливка. Стекло без размытой подложки, один тон.
+            bakedKey = null
+            bakeJob?.cancel()
+            activity.window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(m.wallpaper.solidTone.argb))
+            backdrop.blurred = null
+            topBar.setBackdrop(null)
+            blurredFor = null
+            return
+        }
         if (bakedKey == key) return
         bakedKey = key
         bakeJob?.cancel()
@@ -475,6 +487,7 @@ class HomeController(private val activity: MainActivity) : ShelfHost {
             shelf.update(spec.title, m.titles, spec.items, spec.w, spec.h, style, gapTop = if (index == 0) 0 else ctx.pxi(Space.xl))
         }
         rowsHost.calm = m.calm
+        rowsHost.lite = m.lite
         // Без своих рядов экран не прокручивается: воздух под шапкой как раньше, по высоте экрана.
         val standard = m.rows.isEmpty() && m.showFavorites && m.showAll && m.titles
         val labelSpace = if (m.labels == TileLabels.Off) 0f else Layout.labelSpace.value
@@ -896,7 +909,7 @@ class TopBarView(context: Context) : LinearLayout(context) {
         glass.tint = if (solid) wallpaper.solidTone.argb else Palette.glassBase.copy(alpha = wallpaper.tint).argb
     }
 
-    fun setBackdrop(bitmap: Bitmap) {
+    fun setBackdrop(bitmap: Bitmap?) {
         blurred = bitmap
         place()
     }
@@ -928,6 +941,7 @@ class TopBarView(context: Context) : LinearLayout(context) {
 class RowsHost(context: Context) : FrameLayout(context) {
     val column = LinearLayout(context)
     var calm = false
+    var lite = false
     private var target = 0f
 
     init {
@@ -970,7 +984,7 @@ class RowsHost(context: Context) : FrameLayout(context) {
         if (y == target) return
         target = y
         if (animate) {
-            column.animate().translationY(y).setDuration(260).setInterpolator(DecelerateInterpolator(1.6f)).start()
+            column.animate().translationY(y).setDuration(if (lite) 200 else 260).setInterpolator(DecelerateInterpolator(1.6f)).start()
         } else {
             column.animate().cancel()
             column.translationY = y

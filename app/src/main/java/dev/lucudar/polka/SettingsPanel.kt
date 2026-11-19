@@ -475,6 +475,13 @@ private fun WallsPage(env: RowEnv, settings: LauncherSettings) {
         }
     }
     PanelRow(
+        env, "wall:plain", "Без обоев",
+        description = "Однотонный фон: на слабом стике заметно плавнее",
+        toggle = settings.plainBackground,
+    ) {
+        settings.updatePlainBackground(!settings.plainBackground)
+    }
+    PanelRow(
         env, "wall:brightness", "Яркость обоев",
         value = settings.brightness.title,
         onStep = { settings.updateBrightness(settings.brightness.step(it)) },

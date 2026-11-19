@@ -271,9 +271,11 @@ class TileView(context: Context) : View(context) {
             return
         }
         // Масштаб: свойство RenderNode, лёгкий перелёт в фокусе, без него при отпускании.
+        // Лёгкий режим: короче и без перелёта, на каждое нажатие вдвое меньше кадров анимации.
+        val bounce = on && !pressedNow && !style.lite
         animate().scaleX(target).scaleY(target)
-            .setDuration(if (on && !pressedNow) 220 else 140)
-            .setInterpolator(if (on && !pressedNow) OVERSHOOT else DECELERATE)
+            .setDuration(if (style.lite) 120 else if (bounce) 220 else 140)
+            .setInterpolator(if (bounce) OVERSHOOT else DECELERATE)
             .start()
         glowAnim?.cancel()
         val from = glow
@@ -282,7 +284,7 @@ class TileView(context: Context) : View(context) {
             return
         }
         glowAnim = ValueAnimator.ofFloat(from, glowTarget).apply {
-            duration = 160
+            duration = if (style.lite) 110 else 160
             interpolator = DECELERATE
             addUpdateListener { setGlow(it.animatedValue as Float, lift) }
             start()
@@ -454,7 +456,7 @@ class ShelfAdapter(
 
     private fun fadeLabel(cell: TileCell, active: Boolean) {
         val target = labelAlpha(active)
-        if (style.calm) cell.label.alpha = target else cell.label.animate().alpha(target).setDuration(160).start()
+        if (style.calm || style.lite) cell.label.alpha = target else cell.label.animate().alpha(target).setDuration(160).start()
     }
 
     /** OK: короткое нажатие открывает, долгое (0,5 с) меню. В режиме перестановки стрелки двигают плитку. */
@@ -540,7 +542,7 @@ class ShelfLayoutManager(context: Context) : LinearLayoutManager(context, HORIZO
             else -> right - trail
         }
         if (dx == 0) return false
-        if (immediate || calm) parent.scrollBy(dx, 0) else parent.smoothScrollBy(dx, 0, ease, if (paging) 280 else 220)
+        if (immediate || calm) parent.scrollBy(dx, 0) else parent.smoothScrollBy(dx, 0, ease, if (paging) 240 else 220)
         return true
     }
 
