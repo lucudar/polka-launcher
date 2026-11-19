@@ -842,6 +842,9 @@ class HomeController(private val activity: MainActivity) : ShelfHost {
     @SuppressLint("ClickableViewAccessibility")
     private fun buildViews() {
         val ctx = context
+        // Корень «рисует» (пусто), поэтому окно не отдаёт системе прозрачных областей. Иначе
+        // со слоем обоев SurfaceFlinger прятал бы плитки, уехавшие прокруткой в такую область.
+        root.setWillNotDraw(false)
         content.orientation = LinearLayout.VERTICAL
         content.clipChildren = false
         content.clipToPadding = false
@@ -1004,7 +1007,7 @@ class RowsHost(context: Context) : FrameLayout(context) {
     private var target = 0f
 
     init {
-        clipChildren = true
+        clipChildren = false
         column.orientation = LinearLayout.VERTICAL
         column.clipChildren = false
         column.clipToPadding = false
@@ -1022,6 +1025,10 @@ class RowsHost(context: Context) : FrameLayout(context) {
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         column.layout(0, 0, column.measuredWidth, column.measuredHeight)
+        val bounds = clipBounds
+        if (bounds == null || bounds.right != width || bounds.bottom != height) {
+            clipBounds = android.graphics.Rect(0, 0, width, height)
+        }
         // Ряд удалили или он стал короче: не оставлять пустоту внизу.
         val max = (column.measuredHeight - height).coerceAtLeast(0).toFloat()
         if (-target > max) move(-max, animate = false)
@@ -1082,6 +1089,9 @@ class ShelfView(context: Context, private val prefix: String, host: ShelfHost) :
         list.isFocusable = false
         list.overScrollMode = View.OVER_SCROLL_NEVER
         list.setItemViewCacheSize(6)
+        // Высота ряда задаётся явно в update(): wrap_content в списке без размера давал
+        // нижнему ряду высоту одних отступов, и рамка колонки резала плитки пополам.
+        list.setHasFixedSize(true)
         list.itemAnimator = animator
         val safeH = context.pxi(Layout.safeH)
         list.setPadding(safeH, context.pxi(Space.m), safeH, context.pxi(Space.l))
@@ -1097,6 +1107,13 @@ class ShelfView(context: Context, private val prefix: String, host: ShelfHost) :
         list.itemAnimator = if (style.calm) null else animator
         adapter.resize(w, h)
         adapter.style = style
+        val labelSpace = if (style.labels != TileLabels.Off) context.pxi(28f) else 0
+        val listH = context.pxi(Space.m) + h + labelSpace + context.pxi(Space.l)
+        val lp = list.layoutParams
+        if (lp.height != listH) {
+            lp.height = listH
+            list.layoutParams = lp
+        }
         adapter.submitList(items)
         (layoutParams as? MarginLayoutParams)?.let {
             if (it.topMargin != gapTop) {
