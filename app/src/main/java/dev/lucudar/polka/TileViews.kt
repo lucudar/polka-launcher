@@ -524,6 +524,16 @@ class ShelfLayoutManager(context: Context) : LinearLayoutManager(context, HORIZO
     var calm = false
     private val ease: Interpolator = DecelerateInterpolator(1.8f)
 
+    /**
+     * Держим разложенной ещё одну страницу с каждой стороны: при перелистывании плитки уже созданы
+     * и привязаны, а не собираются посреди анимации. Это и были кадры по 45–60 мс.
+     */
+    override fun calculateExtraLayoutSpace(state: RecyclerView.State, extraLayoutSpace: IntArray) {
+        val page = width - paddingLeft - paddingRight
+        extraLayoutSpace[0] = page
+        extraLayoutSpace[1] = page
+    }
+
     override fun requestChildRectangleOnScreen(
         parent: RecyclerView,
         child: View,

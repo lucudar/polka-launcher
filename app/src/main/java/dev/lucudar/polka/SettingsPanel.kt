@@ -482,6 +482,13 @@ private fun WallsPage(env: RowEnv, settings: LauncherSettings) {
         settings.updatePlainBackground(!settings.plainBackground)
     }
     PanelRow(
+        env, "wall:layer", "Обои отдельным слоем",
+        description = "Эксперимент: обои накладывает сам стик, видеочип их не перерисовывает",
+        toggle = settings.wallLayer,
+    ) {
+        settings.updateWallLayer(!settings.wallLayer)
+    }
+    PanelRow(
         env, "wall:brightness", "Яркость обоев",
         value = settings.brightness.title,
         onStep = { settings.updateBrightness(settings.brightness.step(it)) },

@@ -1,5 +1,9 @@
 package dev.lucudar.polka
 
+import android.view.SurfaceView
+import android.view.SurfaceHolder
+import android.graphics.drawable.ColorDrawable
+import android.graphics.PixelFormat
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.Resources
@@ -94,6 +98,7 @@ private data class HomeModel(
     val calm: Boolean,
     val wallpaper: Wallpaper,
     val plain: Boolean,
+    val layer: Boolean,
     val dim: Float,
     val solid: Boolean,
     val clock: ClockMode,
@@ -343,6 +348,7 @@ class HomeController(private val activity: MainActivity) : ShelfHost {
         calm = settings.reduceMotion,
         wallpaper = settings.wallpaper,
         plain = settings.plainBackground,
+        layer = settings.wallLayer,
         dim = settings.brightness.dim,
         solid = settings.solidGlass,
         clock = settings.clock,
@@ -366,8 +372,9 @@ class HomeController(private val activity: MainActivity) : ShelfHost {
     }
 
     private fun updateWallpaper(m: HomeModel) {
-        val key = Triple(m.wallpaper, m.dim, m.lite)
+        val key = listOf(m.wallpaper, m.dim, m.lite, m.layer)
         if (m.plain) {
+            setLayerMode(false)
             // Без обоев: однотонный фон окна, только заливка. Стекло без размытой подложки, один тон.
             bakedKey = null
             bakeJob?.cancel()
@@ -395,9 +402,52 @@ class HomeController(private val activity: MainActivity) : ShelfHost {
                 topBar.setBackdrop(it)
             }
             result.first?.let { bmp ->
-                // Обои фоном окна: DecorView рисует их одной картинкой, растянутой на экран с фильтрацией.
-                activity.window.setBackgroundDrawable(BitmapDrawable(res, bmp).apply { isFilterBitmap = true })
+                if (m.layer) {
+                    // Отдельный слой: картинка один раз уходит в SurfaceView под окном, дальше её
+                    // накладывает композитор, а окно Полки прозрачное и рисует только плитки.
+                    wallBitmap = bmp
+                    setLayerMode(true)
+                    drawWall()
+                } else {
+                    setLayerMode(false)
+                    wallBitmap = null
+                    // Обои фоном окна: DecorView рисует их одной картинкой, растянутой на экран с фильтрацией.
+                    activity.window.setBackgroundDrawable(BitmapDrawable(res, bmp).apply { isFilterBitmap = true })
+                }
             }
+        }
+    }
+
+    private val wallSurface = SurfaceView(context)
+    private var wallBitmap: Bitmap? = null
+    private var layerOn = false
+
+    private fun setLayerMode(on: Boolean) {
+        if (layerOn == on) return
+        layerOn = on
+        if (on) {
+            activity.window.setFormat(PixelFormat.TRANSLUCENT)
+            activity.window.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
+            wallSurface.visibility = View.VISIBLE
+        } else {
+            wallSurface.visibility = View.GONE
+            activity.window.setFormat(PixelFormat.OPAQUE)
+        }
+    }
+
+    /** Один кадр в слой обоев: дальше буфер просто висит на экране, пока обои не сменят. */
+    private fun drawWall() {
+        val bmp = wallBitmap ?: return
+        val holder = wallSurface.holder
+        val surface = holder.surface
+        if (surface == null || !surface.isValid) return
+        val canvas = runCatching { holder.lockHardwareCanvas() }.getOrNull()
+            ?: runCatching { holder.lockCanvas() }.getOrNull()
+            ?: return
+        try {
+            canvas.drawBitmap(bmp, null, android.graphics.Rect(0, 0, canvas.width, canvas.height), Paint(Paint.FILTER_BITMAP_FLAG))
+        } finally {
+            runCatching { holder.unlockCanvasAndPost(canvas) }
         }
     }
 
@@ -807,6 +857,15 @@ class HomeController(private val activity: MainActivity) : ShelfHost {
             rowsHost,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = ctx.pxi(Space.xl) },
         )
+        // Слой обоев под всем остальным. По умолчанию выключен, включается в «Обои».
+        wallSurface.visibility = View.GONE
+        wallSurface.holder.setFormat(PixelFormat.OPAQUE)
+        wallSurface.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) = drawWall()
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = drawWall()
+            override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
+        })
+        root.addView(wallSurface, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         root.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
         toast.polkaText(18f, Fonts.medium(ctx), Palette.text.argb, lines = 2)

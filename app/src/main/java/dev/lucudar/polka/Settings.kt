@@ -170,6 +170,15 @@ class LauncherSettings(context: Context) {
         prefs.edit().putBoolean(K_PLAIN, value).apply()
     }
 
+    /** Обои на отдельном слое под окном: их накладывает композитор стика, а не видеочип каждый кадр. */
+    var wallLayer by mutableStateOf(prefs.getBoolean(K_WALL_LAYER, false))
+        private set
+
+    fun updateWallLayer(value: Boolean) {
+        wallLayer = value
+        prefs.edit().putBoolean(K_WALL_LAYER, value).apply()
+    }
+
     fun updateShowFavorites(value: Boolean) {
         showFavorites = value
         prefs.edit().putBoolean(K_SHOW_FAVS, value).apply()
@@ -343,9 +352,10 @@ class LauncherSettings(context: Context) {
             .remove(K_DATE).remove(K_SOLID).remove(K_MOTION).remove(K_HIDDEN)
             .remove(K_TILES).remove(K_LABELS).remove(K_BRIGHTNESS).remove(K_AUTOSTART)
             .remove(K_SHOW_FAVS).remove(K_SHOW_ALL).remove(K_ROW_TITLES).remove(K_ADD_TILES)
-            .remove(K_WIFI).remove(K_EFFECTS).remove(K_PLAIN)
+            .remove(K_WIFI).remove(K_EFFECTS).remove(K_PLAIN).remove(K_WALL_LAYER)
             .apply()
         plainBackground = false
+        wallLayer = false
         showFavorites = true
         showAllApps = true
         rowTitles = true
@@ -391,6 +401,7 @@ class LauncherSettings(context: Context) {
         const val K_WIFI = "show_wifi"
         const val K_EFFECTS = "effects"
         const val K_PLAIN = "plain_background"
+        const val K_WALL_LAYER = "wall_layer"
     }
 }
 
