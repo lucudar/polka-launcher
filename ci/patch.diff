@@ -1,0 +1,11 @@
+--- a/app/src/main/java/dev/lucudar/polka/ViewHome.kt
++++ b/app/src/main/java/dev/lucudar/polka/ViewHome.kt
+@@ -163,7 +163,7 @@
+     private var visible: List<AppEntry> = emptyList()
+     private var favList: List<AppEntry> = emptyList()
+     private var rowApps: List<Pair<AppRow, List<AppEntry>>> = emptyList()
+-    private var bakedKey: Triple<Wallpaper, Float, Boolean>? = null
++    private var bakedKey: List<Any>? = null
+     private var blurredFor: Wallpaper? = null
+     private var blurred: Bitmap? = null
+     private var bakeJob: Job? = null

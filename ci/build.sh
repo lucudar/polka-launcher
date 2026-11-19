@@ -71,6 +71,21 @@ if [ -f ci/import.json ]; then
   fi
 fi
 
+# 1б. Мелкая правка: ci/patch.diff накладывается через git apply, коммитится и удаляется.
+# Так однострочные починки не требуют перезаливки всего архива.
+if [ -f ci/patch.diff ]; then
+  if git apply --whitespace=nowarn ci/patch.diff; then
+    git rm -q ci/patch.diff
+    git add -A
+    git -c user.name="$bot_name" -c user.email="$bot_mail" commit -qm "CI: правка из ci/patch.diff"
+    if git push -q origin "HEAD:${GITHUB_REF_NAME}"; then import_state="правка наложена"; else import_state="ошибка пуша правки"; fi
+  else
+    import_state="правка не наложилась"
+    report "failure"
+    exit 1
+  fi
+fi
+
 if [ ! -f app/build.gradle.kts ]; then
   report "нет проекта"
   exit 0
