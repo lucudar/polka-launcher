@@ -501,7 +501,7 @@ fun HomeScreen(resumeTick: Int, homeTick: Int) {
         ) {
             // Обои запечены вместе со скримом и затемнением в одну картинку: на S905Y4 это один
             // полноэкранный проход за кадр вместо трёх. Пока печётся, видна размытая копия.
-            val baked = rememberBakedWallpaper(wp, wallDim)
+            val baked = rememberBakedWallpaper(wp, wallDim, half = look.lite)
             if (lite) {
                 // Плавная смена обоев держит два полноэкранных слоя и буфер под альфу: в лёгком режиме сразу.
                 Image(
@@ -1289,11 +1289,11 @@ private fun AddTile(
 
 /** Обои + скрим + затемнение одной картинкой, в фоне. null, пока первая ещё печётся. */
 @Composable
-private fun rememberBakedWallpaper(wp: Wallpaper, dim: Float): ImageBitmap? {
+private fun rememberBakedWallpaper(wp: Wallpaper, dim: Float, half: Boolean): ImageBitmap? {
     val resources = LocalContext.current.resources
     var baked by remember { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(wp, dim) {
-        val next = withContext(Dispatchers.Default) { runCatching { bakeWallpaper(resources, wp, dim) }.getOrNull() }
+    LaunchedEffect(wp, dim, half) {
+        val next = withContext(Dispatchers.Default) { runCatching { bakeWallpaper(resources, wp, dim, half) }.getOrNull() }
         if (next != null) baked = next
     }
     return baked
@@ -1303,10 +1303,14 @@ private fun rememberBakedWallpaper(wp: Wallpaper, dim: Float): ImageBitmap? {
  * Скрим ровный сверху и плавно темнее книзу. Сила подобрана под каждую картинку, чтобы заголовок
  * над небом держал от 3,7:1 при норме 3:1 для крупного текста. «Яркость обоев» ложится поверх.
  */
-private fun bakeWallpaper(resources: Resources, wp: Wallpaper, dim: Float): ImageBitmap {
+private fun bakeWallpaper(resources: Resources, wp: Wallpaper, dim: Float, half: Boolean): ImageBitmap {
     val options = BitmapFactory.Options().apply {
         inScaled = false
         inMutable = true
+        // Лёгкий режим: обои 960x540 вместо 1920x1080. Замер на стике: даже пустой кадр стоил
+        // видеочипу 8 мс, почти всё это чтение полноэкранной текстуры. Вчетверо меньше данных,
+        // а мягкие пейзажи после растяжения почти не теряют.
+        inSampleSize = if (half) 2 else 1
     }
     val bitmap = BitmapFactory.decodeResource(resources, wp.full, options)
     val canvas = android.graphics.Canvas(bitmap)
@@ -1314,6 +1318,7 @@ private fun bakeWallpaper(resources: Resources, wp: Wallpaper, dim: Float): Imag
     val h = bitmap.height.toFloat()
     fun black(alpha: Float) = android.graphics.Color.argb((alpha.coerceIn(0f, 1f) * 255).roundToInt(), 0, 0, 0)
     val paint = Paint().apply {
+        isDither = true
         shader = LinearGradient(
             0f, 0f, 0f, h,
             intArrayOf(black(wp.scrimTop), black(wp.scrimTop), black(wp.scrimBottom)),
